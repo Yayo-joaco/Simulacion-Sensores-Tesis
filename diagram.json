@@ -11,49 +11,22 @@
       "attrs": {}
     },
     {
-      "type": "wokwi-mpu6050",
-      "id": "mpu1",
+      "type": "wokwi-hx711",
+      "id": "hx1",
       "top": -120,
-      "left": -80,
+      "left": 0,
       "attrs": {
-        "accelX": "0",
-        "accelY": "0",
-        "accelZ": "1",
-        "rotationX": "0",
-        "rotationY": "0",
-        "rotationZ": "0",
-        "temperature": "24"
-      }
-    },
-    {
-      "type": "wokwi-mpu6050",
-      "id": "mpu2",
-      "top": -120,
-      "left": 160,
-      "attrs": {
-        "accelX": "0",
-        "accelY": "0",
-        "accelZ": "1",
-        "rotationX": "0",
-        "rotationY": "0",
-        "rotationZ": "0",
-        "temperature": "26"
+        "type": "5kg"
       }
     }
   ],
   "connections": [
     [ "esp:TX", "$serialMonitor:RX", "", [] ],
     [ "esp:RX", "$serialMonitor:TX", "", [] ],
-    [ "mpu1:VCC", "esp:3V3", "red", [ "h0" ] ],
-    [ "mpu1:GND", "esp:GND.1", "black", [ "h0" ] ],
-    [ "mpu1:SCL", "esp:22", "green", [ "h0" ] ],
-    [ "mpu1:SDA", "esp:21", "blue", [ "h0" ] ],
-    [ "mpu1:AD0", "esp:GND.1", "black", [ "h0" ] ],
-    [ "mpu2:VCC", "esp:3V3", "red", [ "h0" ] ],
-    [ "mpu2:GND", "esp:GND.1", "black", [ "h0" ] ],
-    [ "mpu2:SCL", "esp:22", "green", [ "h0" ] ],
-    [ "mpu2:SDA", "esp:21", "blue", [ "h0" ] ],
-    [ "mpu2:AD0", "esp:3V3", "red", [ "h0" ] ]
+    [ "hx1:VCC", "esp:5V", "red", [ "h0" ] ],
+    [ "hx1:GND", "esp:GND.1", "black", [ "h0" ] ],
+    [ "hx1:DT", "esp:4", "green", [ "h0" ] ],
+    [ "hx1:SCK", "esp:5", "orange", [ "h0" ] ]
   ],
   "dependencies": {}
 }
