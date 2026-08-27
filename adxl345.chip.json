@@ -1,0 +1,31 @@
+{
+  "name": "ADXL345",
+  "author": "Gerardo Rabanal - Tesis IoT-WSN",
+  "pins": ["VCC", "GND", "SDA", "SCL"],
+  "controls": [
+    {
+      "id": "accelX",
+      "label": "Aceleración X (g)",
+      "type": "slider",
+      "min": -16,
+      "max": 16,
+      "default": 0
+    },
+    {
+      "id": "accelY",
+      "label": "Aceleración Y (g)",
+      "type": "slider",
+      "min": -16,
+      "max": 16,
+      "default": 0
+    },
+    {
+      "id": "accelZ",
+      "label": "Aceleración Z (g)",
+      "type": "slider",
+      "min": -16,
+      "max": 16,
+      "default": 1
+    }
+  ]
+}

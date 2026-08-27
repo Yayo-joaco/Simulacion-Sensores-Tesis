@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "author": "GERARDO JOSE RABANAL CALLIRGOS",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "board-esp32-devkit-c-v4",
+      "id": "esp",
+      "top": 0,
+      "left": 0,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-mpu6050",
+      "id": "mpu1",
+      "top": -120,
+      "left": -80,
+      "attrs": {
+        "accelX": "0",
+        "accelY": "0",
+        "accelZ": "1",
+        "rotationX": "0",
+        "rotationY": "0",
+        "rotationZ": "0",
+        "temperature": "24"
+      }
+    },
+    {
+      "type": "chip",
+      "id": "adxl1",
+      "top": -120,
+      "left": 120,
+      "attrs": {
+        "accelX": "0",
+        "accelY": "0",
+        "accelZ": "1"
+      }
+    }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "mpu1:VCC", "esp:3V3", "red", [ "h0" ] ],
+    [ "mpu1:GND", "esp:GND.1", "black", [ "h0" ] ],
+    [ "mpu1:SCL", "esp:22", "green", [ "h0" ] ],
+    [ "mpu1:SDA", "esp:21", "blue", [ "h0" ] ],
+    [ "adxl1:VCC", "esp:3V3", "red", [ "h0" ] ],
+    [ "adxl1:GND", "esp:GND.1", "black", [ "h0" ] ],
+    [ "adxl1:SCL", "esp:22", "green", [ "h0" ] ],
+    [ "adxl1:SDA", "esp:21", "blue", [ "h0" ] ]
+  ],
+  "dependencies": {
+    "adxl345.chip.json": "file:adxl345.chip.json"
+  }
+}
