@@ -26,7 +26,7 @@
       }
     },
     {
-      "type": "chip",
+      "type": "ADXL345",
       "id": "adxl1",
       "top": -120,
       "left": 120,
@@ -50,6 +50,6 @@
     [ "adxl1:SDA", "esp:21", "blue", [ "h0" ] ]
   ],
   "dependencies": {
-    "adxl345.chip.json": "file:adxl345.chip.json"
+    "adxl345.chip.json": "file:./adxl345.chip.json"
   }
 }
