@@ -3,61 +3,73 @@
  * TESIS: Sistema IoT-WSN y CCTV - Subsistema Estructural
  * Autores: Gerardo Rabanal y Gilmar Vargas
  * ============================================================
- * PRUEBA 8.2.4: Galga BF350 + HX711 (deformación simulada)
+ * PRUEBA 8.2.5: DS18B20 (temperatura) + sensores previos
  * ------------------------------------------------------------
- * Objetivo: Validar la lectura del módulo HX711 (amplificador
- *   de celda de carga / galga extensométrica) vía protocolo
- *   dedicado de 2 hilos (DT/SCK) en el ESP32.
+ * Objetivo: Validar la lectura del DS18B20 por protocolo
+ *   1-Wire en el ESP32, junto con los sensores ya probados.
  *
- * Entorno: Wokwi (simulador) + PlatformIO + VS Code
+ * Sensores conectados simultáneamente:
+ *   1. MPU6050 #1 (I2C, 0x68) — acelerómetro/giroscopio
+ *   2. MPU6050 #2 (I2C, 0x69) — simula ADXL345
+ *   3. HX711 (DT/SCK) — galga extensométrica
+ *   4. DS18B20 (1-Wire) — temperatura
  *
- * Conexiones:
- *   HX711 VCC → ESP32 5V
- *   HX711 GND → ESP32 GND
- *   HX711 DT  → ESP32 GPIO 4
- *   HX711 SCK → ESP32 GPIO 5
- *
- * Valores simulados en Wokwi:
- *   - Tipo: celda de carga de 5kg
- *   - Rango de lectura raw: 0 - 2100
- *   - El valor se puede ajustar con slider en el diagrama
+ * Conexiones DS18B20:
+ *   DS18B20 VCC → ESP32 3V3
+ *   DS18B20 GND → ESP32 GND
+ *   DS18B20 DQ  → ESP32 GPIO 15
+ *   (Pull-up 4.7kΩ entre DQ y VCC — incluido implícitamente en Wokwi)
  *
  * Limitaciones de la simulación:
- *   - Wokwi simula el protocolo del HX711 pero no una galga
- *     real con deformación mecánica
- *   - No se puede simular: deformación real del metal, efecto
- *     de temperatura en la galga, vibración estructural
- *   - Esta prueba valida ÚNICAMENTE: protocolo DT/SCK,
- *     lectura de valores raw, calibración básica, y la
- *     integración del HX711 con el ESP32
- *   - La galga BF350 real requiere: puente de Wheatstone,
- *     pegado sobre la superficie metálica, compensación
- *     térmica con DS18B20, y calibración con masa conocida
+ *   - Wokwi simula el protocolo 1-Wire correctamente
+ *   - Se puede ajustar temperatura con slider (-55 a 125°C)
+ *   - No simula: gradiente térmico real, compensación de galgas,
+ *     dilatación térmica de la torre
+ *   - Esta prueba valida: protocolo 1-Wire, lectura de temperatura,
+ *     coexistencia con I2C y HX711 sin conflicto de pines
  * ============================================================
  */
 
 #include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
 #include "HX711.h"
+#include <OneWire.h>
+#include <DallasTemperature.h>
 
 // --- Configuración de pines (según PDF Tabla 4) ---
-#define HX711_DT  4   // GPIO4 - Data
-#define HX711_SCK 5   // GPIO5 - Clock
+#define I2C_SDA     21
+#define I2C_SCL     22
+#define HX711_DT    4
+#define HX711_SCK   5
+#define DS18B20_DQ  15
 #define SERIAL_BAUD 115200
 
-// --- Objeto HX711 ---
-HX711 scale;
+// --- Direcciones I2C ---
+#define SENSOR1_ADDR  0x68
+#define SENSOR2_ADDR  0x69
 
-// --- Variables de calibración ---
-float factorCalibracion = 1.0;
-float tareValue = 0.0;
-unsigned long lecturaCount = 0;
+// --- Objetos sensores ---
+Adafruit_MPU6050 sensor1;
+Adafruit_MPU6050 sensor2;
+HX711 scale;
+OneWire oneWire(DS18B20_DQ);
+DallasTemperature ds18b20(&oneWire);
+
+// --- Contadores ---
+unsigned long loopCount = 0;
 
 // --- Prototipos ---
-bool inicializarHX711();
-void calibrar();
-void leerHX711();
 void imprimirBanner();
 void imprimirSeparador();
+void escanearBusI2C();
+bool inicializarMPU(Adafruit_MPU6050 &sensor, uint8_t addr, const char* nombre);
+bool inicializarHX711();
+bool inicializarDS18B20();
+void leerMPU(Adafruit_MPU6050 &sensor, const char* nombre);
+void leerHX711();
+void leerDS18B20();
 
 // ============================================================
 // SETUP
@@ -68,32 +80,40 @@ void setup() {
 
   imprimirBanner();
 
-  // --- FASE 1: Inicialización ---
-  Serial.println("═══════════════════════════════════════════════");
-  Serial.println("  FASE 1: Inicialización del HX711");
-  Serial.println("═══════════════════════════════════════════════");
-  if (inicializarHX711()) {
-    Serial.println("[OK] HX711 listo para lecturas");
-  } else {
-    Serial.println("[ERROR] HX711 no disponible");
-    while(1) delay(1000);  // Detener si no hay sensor
-  }
+  // Inicializar buses
+  Wire.begin(I2C_SDA, I2C_SCL);
+  Serial.println("[INIT] Bus I2C inicializado (GPIO 21/22)");
   Serial.println();
 
-  // --- FASE 2: Calibración (Tare) ---
+  // --- Escaneo I2C ---
   Serial.println("═══════════════════════════════════════════════");
-  Serial.println("  FASE 2: Calibración (Tare)");
+  Serial.println("  Escaneo bus I2C");
   Serial.println("═══════════════════════════════════════════════");
-  calibrar();
+  escanearBusI2C();
+  Serial.println();
+
+  // --- Inicializar sensores ---
+  Serial.println("═══════════════════════════════════════════════");
+  Serial.println("  Inicialización de sensores");
+  Serial.println("═══════════════════════════════════════════════");
+
+  bool s1_ok = inicializarMPU(sensor1, SENSOR1_ADDR, "MPU6050 #1 (0x68)");
+  bool s2_ok = inicializarMPU(sensor2, SENSOR2_ADDR, "MPU6050 #2 (0x69)");
+  bool hx_ok = inicializarHX711();
+  bool ds_ok = inicializarDS18B20();
   Serial.println();
 
   // --- RESULTADO ---
+  int sensoresOK = s1_ok + s2_ok + hx_ok + ds_ok;
   Serial.println("╔══════════════════════════════════════════════╗");
-  Serial.println("║  RESULTADO PRUEBA 8.2.4: HX711 (galga)      ║");
+  Serial.println("║  RESULTADO: Sensores del subsistema          ║");
   Serial.println("╠══════════════════════════════════════════════╣");
-  Serial.println("║  ✅ EXITOSA: HX711 inicializado y calibrado  ║");
-  Serial.println("║  Protocolo DT/SCK funcional                  ║");
-  Serial.println("║  Lectura de valores raw operativa             ║");
+  Serial.printf("║  MPU6050 #1 (I2C 0x68):  %s\n", s1_ok ? "✅ OK" : "❌ FAIL");
+  Serial.printf("║  MPU6050 #2 (I2C 0x69):  %s\n", s2_ok ? "✅ OK" : "❌ FAIL");
+  Serial.printf("║  HX711 (DT/SCK):         %s\n", hx_ok ? "✅ OK" : "❌ FAIL");
+  Serial.printf("║  DS18B20 (1-Wire):       %s\n", ds_ok ? "✅ OK" : "❌ FAIL");
+  Serial.println("╠══════════════════════════════════════════════╣");
+  Serial.printf("║  Total: %d/4 sensores operativos             \n", sensoresOK);
   Serial.println("╚══════════════════════════════════════════════╝");
   Serial.println();
 
@@ -101,96 +121,30 @@ void setup() {
 }
 
 // ============================================================
-// LOOP
+// LOOP - Lectura simultánea de todos los sensores
 // ============================================================
 void loop() {
+  loopCount++;
+  Serial.printf("═══ Ciclo #%lu ═══════════════════════════════\n", loopCount);
+
+  leerMPU(sensor1, "MPU6050 #1 (0x68)");
+  leerMPU(sensor2, "MPU6050 #2 (0x69)");
   leerHX711();
-  delay(1000);
+  leerDS18B20();
+
+  Serial.println();
+  delay(2000);
 }
 
 // ============================================================
 // FUNCIONES
 // ============================================================
 
-bool inicializarHX711() {
-  Serial.println("[INIT] Conectando HX711...");
-  Serial.printf("[INIT]   DT:  GPIO %d\n", HX711_DT);
-  Serial.printf("[INIT]   SCK: GPIO %d\n", HX711_SCK);
-
-  scale.begin(HX711_DT, HX711_SCK);
-
-  // Verificar si el sensor responde
-  if (scale.is_ready()) {
-    Serial.println("[INIT]   HX711 detectado y listo");
-    return true;
-  }
-
-  // Intentar esperar un poco
-  Serial.println("[INIT]   Esperando HX711...");
-  delay(500);
-  if (scale.is_ready()) {
-    Serial.println("[INIT]   HX711 detectado");
-    return true;
-  }
-
-  Serial.println("[INIT]   ERROR: HX711 no responde");
-  return false;
-}
-
-void calibrar() {
-  Serial.println("[CAL] Realizando tare (sin carga)...");
-  Serial.println("[CAL]   Promediando 10 lecturas...");
-
-  // Promediar varias lecturas para el tare
-  long sum = 0;
-  int count = 0;
-  for (int i = 0; i < 10; i++) {
-    if (scale.is_ready()) {
-      sum += scale.read();
-      count++;
-    }
-    delay(100);
-  }
-
-  if (count > 0) {
-    tareValue = (float)sum / count;
-    Serial.printf("[CAL]   Valor tare (raw): %.0f\n", tareValue);
-    Serial.printf("[CAL]   Lecturas válidas: %d/10\n", count);
-    Serial.println("[CAL] Tare completado");
-  } else {
-    Serial.println("[CAL]   ERROR: No se pudo realizar tare");
-  }
-}
-
-void leerHX711() {
-  lecturaCount++;
-
-  if (!scale.is_ready()) {
-    Serial.printf("─── Lectura #%lu │ ERROR: HX711 no disponible ─\n", lecturaCount);
-    return;
-  }
-
-  // Leer valor raw del HX711
-  long rawValue = scale.read();
-
-  // Calcular valor relativo al tare
-  float relativeValue = rawValue - tareValue;
-
-  // Simular peso (factor de calibración arbitrario para demostración)
-  // En hardware real, se calibra con masa conocida
-  float pesoSimulado = relativeValue * factorCalibracion / 1000.0;  // kg
-
-  Serial.printf("─── Lectura #%lu ───────────────────────────────\n", lecturaCount);
-  Serial.printf("  [HX711] Raw: %ld\n", rawValue);
-  Serial.printf("  [HX711] Relativo al tare: %.0f\n", relativeValue);
-  Serial.printf("  [HX711] Peso simulado: %.3f kg\n", pesoSimulado);
-  Serial.println();
-}
-
 void imprimirBanner() {
   Serial.println("╔══════════════════════════════════════════════╗");
   Serial.println("║  TESIS: IoT-WSN - Subsistema Estructural    ║");
-  Serial.println("║  Prueba 8.2.4: Galga BF350 + HX711          ║");
+  Serial.println("║  Prueba integrada: 4 sensores simultáneos   ║");
+  Serial.println("║  MPU6050x2 + HX711 + DS18B20                ║");
   Serial.println("║  Autores: Rabanal / Vargas                   ║");
   Serial.println("║  Entorno: Wokwi + PlatformIO + ESP32         ║");
   Serial.println("╚══════════════════════════════════════════════╝");
@@ -199,7 +153,95 @@ void imprimirBanner() {
 
 void imprimirSeparador() {
   Serial.println("════════════════════════════════════════════════");
-  Serial.println("  Lectura cada 1s - Ajuste slider en diagrama");
+  Serial.println("  Lectura simultánea cada 2s");
   Serial.println("════════════════════════════════════════════════");
   Serial.println();
+}
+
+void escanearBusI2C() {
+  int count = 0;
+  for (uint8_t addr = 1; addr < 127; addr++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) {
+      Serial.printf("  ✅ Dispositivo en 0x%02X", addr);
+      if (addr == SENSOR1_ADDR) Serial.print("  ← MPU6050 #1");
+      if (addr == SENSOR2_ADDR) Serial.print("  ← MPU6050 #2");
+      Serial.println();
+      count++;
+    }
+  }
+  Serial.printf("  Total: %d dispositivo(s) I2C\n", count);
+}
+
+bool inicializarMPU(Adafruit_MPU6050 &sensor, uint8_t addr, const char* nombre) {
+  Serial.printf("[INIT] %s...", nombre);
+  if (!sensor.begin(addr)) {
+    Serial.println(" ❌");
+    return false;
+  }
+  sensor.setAccelerometerRange(MPU6050_RANGE_4_G);
+  sensor.setGyroRange(MPU6050_RANGE_500_DEG);
+  sensor.setFilterBandwidth(MPU6050_BAND_21_HZ);
+  Serial.println(" ✅");
+  return true;
+}
+
+bool inicializarHX711() {
+  Serial.print("[INIT] HX711 (GPIO 4/5)...");
+  scale.begin(HX711_DT, HX711_SCK);
+  delay(500);
+  if (scale.is_ready()) {
+    Serial.println(" ✅");
+    scale.tare();
+    return true;
+  }
+  Serial.println(" ❌");
+  return false;
+}
+
+bool inicializarDS18B20() {
+  Serial.print("[INIT] DS18B20 (GPIO 15)...");
+  ds18b20.begin();
+
+  int deviceCount = ds18b20.getDeviceCount();
+  if (deviceCount > 0) {
+    Serial.printf(" ✅ (%d sensor(es))\n", deviceCount);
+    return true;
+  }
+  Serial.println(" ❌");
+  return false;
+}
+
+void leerMPU(Adafruit_MPU6050 &sensor, const char* nombre) {
+  sensors_event_t accel, gyro, temp;
+  sensor.getEvent(&accel, &gyro, &temp);
+
+  Serial.printf("  [%s]\n", nombre);
+  Serial.printf("    Accel: X=%+.2f Y=%+.2f Z=%+.2f m/s²\n",
+                accel.acceleration.x, accel.acceleration.y, accel.acceleration.z);
+  Serial.printf("    Gyro:  X=%+.2f Y=%+.2f Z=%+.2f °/s\n",
+                gyro.gyro.x, gyro.gyro.y, gyro.gyro.z);
+  Serial.printf("    Temp:  %.1f°C\n", temp.temperature);
+}
+
+void leerHX711() {
+  Serial.println("  [HX711]");
+  if (scale.is_ready()) {
+    long raw = scale.read();
+    Serial.printf("    Raw: %ld\n", raw);
+  } else {
+    Serial.println("    ERROR: No disponible");
+  }
+}
+
+void leerDS18B20() {
+  Serial.println("  [DS18B20]");
+  ds18b20.requestTemperatures();
+
+  float tempC = ds18b20.getTempCByIndex(0);
+  if (tempC != DEVICE_DISCONNECTED_C) {
+    Serial.printf("    Temperatura: %.2f°C\n", tempC);
+  } else {
+    Serial.println("    ERROR: Sensor desconectado");
+  }
 }
