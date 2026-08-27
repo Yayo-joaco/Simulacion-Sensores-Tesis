@@ -3,26 +3,24 @@
  * TESIS: Sistema IoT-WSN y CCTV - Subsistema Estructural
  * Autores: Gerardo Rabanal y Gilmar Vargas
  * ============================================================
- * PRUEBA 8.2.1: Bus I2C compartido (MPU6050 + ADXL345)
+ * PRUEBA 8.2.1: Bus I2C compartido (dos dispositivos)
  * ------------------------------------------------------------
- * Objetivo: Validar que ambos sensores responden con direcciones
- *   I2C distintas (0x68 y 0x53) sin conflicto en el mismo bus
- *   del ESP32.
+ * Objetivo: Validar que dos sensores I2C responden con
+ *   direcciones distintas sin conflicto en el mismo bus.
  *
- * Entorno: Wokwi (simulador) + PlatformIO + VS Code
- *
- * Conexiones (comparten el mismo bus I2C):
- *   MPU6050 VCC → ESP32 3V3    ADXL345 VCC → ESP32 3V3
- *   MPU6050 GND → ESP32 GND    ADXL345 GND → ESP32 GND
- *   MPU6050 SCL → ESP32 GPIO22 ADXL345 SCL → ESP32 GPIO22
- *   MPU6050 SDA → ESP32 GPIO21 ADXL345 SDA → ESP32 GPIO21
+ * Método: Dos MPU6050 nativos de Wokwi:
+ *   - MPU1: AD0=GND → dirección 0x68 (simula MPU6050 real)
+ *   - MPU2: AD0=VCC → dirección 0x69 (simula rol del ADXL345)
  *
  * Limitaciones de la simulación:
- *   - El ADXL345 es un custom chip de Wokwi que simula solo
- *     el protocolo I2C (dirección 0x53, registros de datos)
- *   - No simula vibración física real ni movimiento
- *   - Esta prueba valida ÚNICAMENTE: coexistencia de dos
- *     dispositivos I2C en el mismo bus sin conflictos
+ *   - Wokwi no tiene ADXL345 nativo ni soporta custom chips
+ *     en la extensión VS Code sin compilación manual a WASM
+ *   - Se usa MPU6050 con dirección alternativa para demostrar
+ *     el concepto de coexistencia I2C (dos direcciones distintas)
+ *   - El concepto validado es idéntico: el bus I2C del ESP32
+ *     maneja múltiples dispositivos sin conflicto
+ *   - La prueba real con ADXL345 (0x53) se validará con
+ *     hardware físico en la fase de laboratorio
  * ============================================================
  */
 
@@ -37,16 +35,12 @@
 #define SERIAL_BAUD 115200
 
 // --- Direcciones I2C ---
-#define MPU6050_ADDR  0x68
-#define ADXL345_ADDR  0x53
+#define SENSOR1_ADDR  0x68  // MPU6050 con AD0=GND
+#define SENSOR2_ADDR  0x69  // MPU6050 con AD0=VCC (simula ADXL345)
 
-// --- Registros del ADXL345 (para lectura directa) ---
-#define ADXL345_REG_DEVID     0x00
-#define ADXL345_REG_DATAX0    0x32
-#define ADXL345_REG_POWER_CTL 0x2D
-
-// --- Objeto MPU6050 (librería Adafruit) ---
-Adafruit_MPU6050 mpu;
+// --- Objetos sensores ---
+Adafruit_MPU6050 sensor1;
+Adafruit_MPU6050 sensor2;
 
 // --- Contadores ---
 unsigned long loopCount = 0;
@@ -54,10 +48,8 @@ unsigned long loopCount = 0;
 // --- Prototipos ---
 void escanearBusI2C();
 bool verificarDispositivo(uint8_t addr, const char* nombre);
-bool inicializarMPU6050();
-void inicializarADXL345();
-void leerMPU6050();
-void leerADXL345();
+bool inicializarSensor(Adafruit_MPU6050 &sensor, uint8_t addr, const char* nombre);
+void leerSensor(Adafruit_MPU6050 &sensor, const char* nombre);
 void imprimirBanner();
 void imprimirSeparador();
 
@@ -88,23 +80,23 @@ void setup() {
   Serial.println("═══════════════════════════════════════════════");
   Serial.println("  FASE 2: Verificación de direcciones I2C");
   Serial.println("═══════════════════════════════════════════════");
-  bool mpu_ok = verificarDispositivo(MPU6050_ADDR, "MPU6050");
-  bool adxl_ok = verificarDispositivo(ADXL345_ADDR, "ADXL345");
+  bool s1_ok = verificarDispositivo(SENSOR1_ADDR, "Sensor1 (MPU6050)");
+  bool s2_ok = verificarDispositivo(SENSOR2_ADDR, "Sensor2 (simula ADXL345)");
   Serial.println();
 
   // --- FASE 3: Inicialización de sensores ---
   Serial.println("═══════════════════════════════════════════════");
   Serial.println("  FASE 3: Inicialización de sensores");
   Serial.println("═══════════════════════════════════════════════");
-  if (mpu_ok) {
-    inicializarMPU6050();
+  if (s1_ok) {
+    inicializarSensor(sensor1, SENSOR1_ADDR, "Sensor1 (0x68)");
   } else {
-    Serial.println("[ERROR] MPU6050 no detectado. Omitiendo inicialización.");
+    Serial.println("[ERROR] Sensor1 no detectado.");
   }
-  if (adxl_ok) {
-    inicializarADXL345();
+  if (s2_ok) {
+    inicializarSensor(sensor2, SENSOR2_ADDR, "Sensor2 (0x69)");
   } else {
-    Serial.println("[ERROR] ADXL345 no detectado. Omitiendo inicialización.");
+    Serial.println("[ERROR] Sensor2 no detectado.");
   }
   Serial.println();
 
@@ -112,11 +104,11 @@ void setup() {
   Serial.println("╔══════════════════════════════════════════════╗");
   Serial.println("║  RESULTADO PRUEBA 8.2.1: Bus I2C compartido ║");
   Serial.println("╠══════════════════════════════════════════════╣");
-  if (mpu_ok && adxl_ok) {
-    Serial.println("║  ✅ EXITOSA: Ambos sensores detectados      ║");
-    Serial.println("║  MPU6050 (0x68) y ADXL345 (0x53) coexisten  ║");
+  if (s1_ok && s2_ok) {
+    Serial.println("║  ✅ EXITOSA: Dos dispositivos I2C detectados ║");
+    Serial.println("║  Sensor1 (0x68) y Sensor2 (0x69) coexisten   ║");
     Serial.println("║  sin conflicto en el mismo bus I2C           ║");
-  } else if (mpu_ok || adxl_ok) {
+  } else if (s1_ok || s2_ok) {
     Serial.println("║  ⚠️  PARCIAL: Solo un sensor detectado       ║");
   } else {
     Serial.println("║  ❌ FALLIDA: Ningún sensor detectado         ║");
@@ -134,13 +126,11 @@ void loop() {
   loopCount++;
   Serial.printf("─── Ciclo #%lu ───────────────────────────────\n", loopCount);
 
-  // Leer MPU6050
-  Serial.println("  [MPU6050 @ 0x68]");
-  leerMPU6050();
+  Serial.println("  [Sensor1 @ 0x68 - MPU6050]");
+  leerSensor(sensor1, "Sensor1");
 
-  // Leer ADXL345
-  Serial.println("  [ADXL345 @ 0x53]");
-  leerADXL345();
+  Serial.println("  [Sensor2 @ 0x69 - simula ADXL345]");
+  leerSensor(sensor2, "Sensor2");
 
   Serial.println();
   delay(2000);
@@ -162,8 +152,8 @@ void escanearBusI2C() {
 
     if (error == 0) {
       Serial.printf("  ✅ Dispositivo encontrado en 0x%02X", addr);
-      if (addr == MPU6050_ADDR) Serial.print("  ← MPU6050");
-      if (addr == ADXL345_ADDR) Serial.print("  ← ADXL345");
+      if (addr == SENSOR1_ADDR) Serial.print("  ← Sensor1 (MPU6050)");
+      if (addr == SENSOR2_ADDR) Serial.print("  ← Sensor2 (simula ADXL345)");
       Serial.println();
       dispositivosEncontrados++;
     }
@@ -187,52 +177,26 @@ bool verificarDispositivo(uint8_t addr, const char* nombre) {
   }
 }
 
-bool inicializarMPU6050() {
-  Serial.println("[INIT] Inicializando MPU6050...");
+bool inicializarSensor(Adafruit_MPU6050 &sensor, uint8_t addr, const char* nombre) {
+  Serial.printf("[INIT] Inicializando %s...\n", nombre);
 
-  if (!mpu.begin()) {
-    Serial.println("[INIT]   ERROR: No se pudo inicializar");
+  if (!sensor.begin(addr)) {
+    Serial.printf("[INIT]   ERROR: No se pudo inicializar %s\n", nombre);
     return false;
   }
 
-  mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
-  mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+  sensor.setAccelerometerRange(MPU6050_RANGE_4_G);
+  sensor.setGyroRange(MPU6050_RANGE_500_DEG);
+  sensor.setFilterBandwidth(MPU6050_BAND_21_HZ);
 
-  Serial.println("[INIT]   MPU6050 inicializado correctamente");
+  Serial.printf("[INIT]   %s inicializado correctamente\n", nombre);
   Serial.println("[INIT]   Rango: ±4g / ±500°/s / Filtro 21Hz");
   return true;
 }
 
-void inicializarADXL345() {
-  Serial.println("[INIT] Inicializando ADXL345...");
-
-  // Leer Device ID directamente por I2C
-  Wire.beginTransmission(ADXL345_ADDR);
-  Wire.write(ADXL345_REG_DEVID);
-  Wire.endTransmission(false);
-  Wire.requestFrom((int)ADXL345_ADDR, (int)1);
-  uint8_t devId = Wire.read();
-
-  Serial.printf("[INIT]   Device ID: 0x%02X", devId);
-  if (devId == 0xE5) {
-    Serial.println(" (correcto para ADXL345)");
-  } else {
-    Serial.println(" (inesperado)");
-  }
-
-  // Activar modo medición (set bit 3 en POWER_CTL)
-  Wire.beginTransmission(ADXL345_ADDR);
-  Wire.write(ADXL345_REG_POWER_CTL);
-  Wire.write(0x08);  // Measure bit
-  Wire.endTransmission();
-
-  Serial.println("[INIT]   ADXL345 en modo medición");
-}
-
-void leerMPU6050() {
+void leerSensor(Adafruit_MPU6050 &sensor, const char* nombre) {
   sensors_event_t accel, gyro, temp;
-  mpu.getEvent(&accel, &gyro, &temp);
+  sensor.getEvent(&accel, &gyro, &temp);
 
   Serial.printf("    Accel: X=%+.3f Y=%+.3f Z=%+.3f m/s²\n",
                 accel.acceleration.x, accel.acceleration.y, accel.acceleration.z);
@@ -241,45 +205,11 @@ void leerMPU6050() {
   Serial.printf("    Temp:  %.1f°C\n", temp.temperature);
 }
 
-void leerADXL345() {
-  // Leer 6 bytes de datos (X0, X1, Y0, Y1, Z0, Z1)
-  Wire.beginTransmission(ADXL345_ADDR);
-  Wire.write(ADXL345_REG_DATAX0);
-  Wire.endTransmission(false);
-  Wire.requestFrom((int)ADXL345_ADDR, (int)6);
-
-  if (Wire.available() >= 6) {
-    uint8_t x0 = Wire.read(); uint8_t x1 = Wire.read();
-    uint8_t y0 = Wire.read(); uint8_t y1 = Wire.read();
-    uint8_t z0 = Wire.read(); uint8_t z1 = Wire.read();
-
-    // Reconstruir valores 16-bit (little-endian, dos complemento)
-    int16_t raw_x = (int16_t)(x0 | (x1 << 8));
-    int16_t raw_y = (int16_t)(y0 | (y1 << 8));
-    int16_t raw_z = (int16_t)(z0 | (z1 << 8));
-
-    // Convertir a g (sensibilidad: 256 LSB/g en modo ±2g)
-    float gx = raw_x / 256.0;
-    float gy = raw_y / 256.0;
-    float gz = raw_z / 256.0;
-
-    // Convertir a m/s² (1g = 9.80665 m/s²)
-    float ax = gx * 9.80665;
-    float ay = gy * 9.80665;
-    float az = gz * 9.80665;
-
-    Serial.printf("    Raw:   X=%+6d Y=%+6d Z=%+6d\n", raw_x, raw_y, raw_z);
-    Serial.printf("    Accel: X=%+.3f Y=%+.3f Z=%+.3f m/s²\n", ax, ay, az);
-  } else {
-    Serial.println("    ERROR: No se pudieron leer datos del ADXL345");
-  }
-}
-
 void imprimirBanner() {
   Serial.println("╔══════════════════════════════════════════════╗");
   Serial.println("║  TESIS: IoT-WSN - Subsistema Estructural    ║");
   Serial.println("║  Prueba 8.2.1: Bus I2C compartido           ║");
-  Serial.println("║  MPU6050 (0x68) + ADXL345 (0x53)            ║");
+  Serial.println("║  Dos dispositivos I2C en el mismo bus        ║");
   Serial.println("║  Autores: Rabanal / Vargas                   ║");
   Serial.println("║  Entorno: Wokwi + PlatformIO + ESP32         ║");
   Serial.println("╚══════════════════════════════════════════════╝");

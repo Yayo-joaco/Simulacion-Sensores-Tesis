@@ -26,14 +26,18 @@
       }
     },
     {
-      "type": "ADXL345",
-      "id": "adxl1",
+      "type": "wokwi-mpu6050",
+      "id": "mpu2",
       "top": -120,
-      "left": 120,
+      "left": 160,
       "attrs": {
         "accelX": "0",
         "accelY": "0",
-        "accelZ": "1"
+        "accelZ": "1",
+        "rotationX": "0",
+        "rotationY": "0",
+        "rotationZ": "0",
+        "temperature": "26"
       }
     }
   ],
@@ -44,12 +48,12 @@
     [ "mpu1:GND", "esp:GND.1", "black", [ "h0" ] ],
     [ "mpu1:SCL", "esp:22", "green", [ "h0" ] ],
     [ "mpu1:SDA", "esp:21", "blue", [ "h0" ] ],
-    [ "adxl1:VCC", "esp:3V3", "red", [ "h0" ] ],
-    [ "adxl1:GND", "esp:GND.1", "black", [ "h0" ] ],
-    [ "adxl1:SCL", "esp:22", "green", [ "h0" ] ],
-    [ "adxl1:SDA", "esp:21", "blue", [ "h0" ] ]
+    [ "mpu1:AD0", "esp:GND.1", "black", [ "h0" ] ],
+    [ "mpu2:VCC", "esp:3V3", "red", [ "h0" ] ],
+    [ "mpu2:GND", "esp:GND.1", "black", [ "h0" ] ],
+    [ "mpu2:SCL", "esp:22", "green", [ "h0" ] ],
+    [ "mpu2:SDA", "esp:21", "blue", [ "h0" ] ],
+    [ "mpu2:AD0", "esp:3V3", "red", [ "h0" ] ]
   ],
-  "dependencies": {
-    "adxl345.chip.json": "file:./adxl345.chip.json"
-  }
+  "dependencies": {}
 }
