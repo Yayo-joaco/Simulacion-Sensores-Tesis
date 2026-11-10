@@ -135,29 +135,53 @@
         }
         check("_render: 5 frames sin excepción", renderOk, err && String(err));
 
-        // ── halo: debe seguir al marcador del sensor bajo rotación ──────
-        // (regresión del defecto: el ancla se proyectaba sin rotar y el halo
-        // se despegaba del cubo — con yaw=180° quedaba en el lado opuesto).
-        // Objetivo y estado se fijan AL MISMO valor para que el suavizado
-        // interno no arrastre ángulos de pruebas anteriores, y se renderiza
-        // con el MISMO timestamp del frame anterior: dt = 0 no avanza la
-        // fase del balanceo y la comprobación es exacta.
+        // ── halo y partición estático/antena ────────────────────────────
+        // El ancla del sensor pertenece a la celosía ESTÁTICA: la orientación
+        // (que mueve solo la antena) no debe despegar el halo del cubo. Y con
+        // balanceo activo el ancla debe recibir la deflexión (y/H)²·swayDisp
+        // de los vértices (sobre el eje del balanceo, en el plano horizontal
+        // del MUNDO). Objetivo y estado se fijan AL MISMO valor para que el
+        // suavizado interno no arrastre ángulos de pruebas anteriores, y se
+        // renderiza con el MISMO timestamp del frame anterior: dt = 0 no
+        // avanza la fase del balanceo y la comprobación es exacta.
         model.setHasData(true);
-        model.vibAmp = 0; model.vibAmpTarget = 0; // sin balanceo: solo rotación
+        model.vibAmp = 0; model.vibAmpTarget = 0; // sin balanceo
         model._swayPhase = 0;
         model.setVibration(0, 1.0, 0, 0, 9.8); // halo activo
         model.setOrientation(0, 0, 180);
         model.roll = 0; model.pitch = 0; model.yaw = 180;
         model._render(model._lastFrameMs);
-        // Con yaw = 180° la rotación del contrato (INVERT_YAW) es diag(-1,-1,1):
-        // el ancla (a0, a1, a2) debe aparecer en (-a0, -a1, a2).
         const ancla = model.sensorAnchor, hw = model._haloWorld;
-        check("halo sigue al marcador con yaw=180",
-          Math.abs(hw[0] + ancla[0]) < 1e-3 &&
-          Math.abs(hw[1] + ancla[1]) < 1e-3 &&
+        check("halo sigue al marcador con yaw=180 (celosía estática)",
+          Math.abs(hw[0] - ancla[0]) < 1e-3 &&
+          Math.abs(hw[1] - ancla[1]) < 1e-3 &&
           Math.abs(hw[2] - ancla[2]) < 1e-3,
           "halo=" + hw.map((v) => v.toFixed(3)).join(",") +
           " ancla=" + ancla.map((v) => v.toFixed(3)).join(","));
+        // El grupo antena SÍ rota: con yaw = 180° la rotación del contrato
+        // (INVERT_YAW) es diag(-1,-1,1) alrededor del pivote de la cima, de
+        // modo que un vértice (px, py, pz) del grupo antena debe aparecer en
+        // (-px, 2·pivotY − py, pz).
+        const aIdx = model.antennaStart;
+        check("el modelo expone un grupo antena no vacío",
+          aIdx > 0 && aIdx < model.nVerts, "antennaStart=" + aIdx + " nV=" + model.nVerts);
+        const pax = model.verts[aIdx * 3], pay = model.verts[aIdx * 3 + 1], paz = model.verts[aIdx * 3 + 2];
+        const wA = model.world, piv = model.pivotY;
+        check("grupo antena rota con yaw=180 alrededor de la cima",
+          Math.abs(wA[aIdx * 3] + pax) < 1e-3 &&
+          Math.abs(wA[aIdx * 3 + 1] - (2 * piv - pay)) < 1e-3 &&
+          Math.abs(wA[aIdx * 3 + 2] - paz) < 1e-3,
+          "world=" + [wA[aIdx * 3], wA[aIdx * 3 + 1], wA[aIdx * 3 + 2]].map((v) => v.toFixed(3)).join(",") +
+          " esperado=" + [-pax, 2 * piv - pay, paz].map((v) => v.toFixed(3)).join(","));
+        // Y la celosía NO debe moverse: un vértice del grupo estático queda
+        // idéntico bajo cualquier orientación (asentado en el suelo).
+        const sIdx = 0;
+        const sbx = model.verts[sIdx * 3], sby = model.verts[sIdx * 3 + 1], sbz = model.verts[sIdx * 3 + 2];
+        check("la celosía permanece fija con la orientación",
+          Math.abs(wA[sIdx * 3] - sbx) < 1e-6 &&
+          Math.abs(wA[sIdx * 3 + 1] - sby) < 1e-6 &&
+          Math.abs(wA[sIdx * 3 + 2] - sbz) < 1e-6,
+          "world=" + [wA[sIdx * 3], wA[sIdx * 3 + 1], wA[sIdx * 3 + 2]].map((v) => v.toFixed(3)).join(","));
         // Y con balanceo activo: el ancla transformada debe recibir también
         // la deflexión (y/H)²·swayDisp de los vértices (sobre el eje del
         // balanceo, en el plano horizontal del MUNDO).
@@ -166,8 +190,8 @@
         model.swayDir = [1, 0];
         model._render(model._lastFrameMs);
         const t2 = ancla[1] / model.cfg.height;
-        const esperadoX = -ancla[0] + 1 * t2 * t2;
-        const esperadoY = -ancla[1];
+        const esperadoX = ancla[0] + 1 * t2 * t2;
+        const esperadoY = ancla[1];
         check("halo recibe la deflexión del balanceo",
           Math.abs(model._haloWorld[0] - esperadoX) < 1e-3 &&
           Math.abs(model._haloWorld[1] - esperadoY) < 1e-3,
@@ -201,6 +225,51 @@
         try { model._render(performance.now() + 1000); } catch (e) { renderOk = false; err = e; }
         check("_render tras setConfig sin excepción", renderOk, err && String(err));
         check("setConfig: la altura aplicada es la pedida", model.cfg.height === 33, String(model.cfg.height));
+
+        // ── modelo de antena aislado (tarjeta de Orientación) ───────────
+        check("AntennaModel exportado", typeof M.AntennaModel === "function");
+        const ant = new M.AntennaModel(canvas);
+        check("AntennaModel: constructor sin error", ant.nVerts > 0, "nV=" + ant.nVerts);
+        check("AntennaModel: grupo antena presente",
+          ant.antennaStart > 0 && ant.antennaStart < ant.nVerts,
+          "antennaStart=" + ant.antennaStart + " nV=" + ant.nVerts);
+        ant.setHasData(true);
+        ant.setOrientation(0, 0, 180);
+        ant.roll = 0; ant.pitch = 0; ant.yaw = 180;
+        let antOk = true, antErr = null;
+        for (let i = 0; i < 3; i++) {
+          try { ant._render(); } catch (e) { antOk = false; antErr = e; break; }
+        }
+        check("AntennaModel: frames sin excepción", antOk, antErr && String(antErr));
+        // Con yaw = 180 (diag(-1,-1,1)) el primer vértice del grupo antena
+        // (articulada en el origen) debe quedar en (-x, -y, z) respecto de su
+        // posición de modelo, y la placa de montaje no se mueve.
+        const ia = ant.antennaStart;
+        const lax = ant.verts[ia * 3], lay = ant.verts[ia * 3 + 1], laz = ant.verts[ia * 3 + 2];
+        check("AntennaModel: la antena gira con la orientación",
+          Math.abs(ant.world[ia * 3] + lax) < 1e-3 &&
+          Math.abs(ant.world[ia * 3 + 1] + lay) < 1e-3 &&
+          Math.abs(ant.world[ia * 3 + 2] - laz) < 1e-3,
+          "world=" + [ant.world[ia * 3], ant.world[ia * 3 + 1], ant.world[ia * 3 + 2]].map((v) => v.toFixed(3)).join(","));
+        check("AntennaModel: la placa de montaje es estática",
+          Math.abs(ant.world[0] - ant.verts[0]) < 1e-6 &&
+          Math.abs(ant.world[1] - ant.verts[1]) < 1e-6 &&
+          Math.abs(ant.world[2] - ant.verts[2]) < 1e-6);
+        check("AntennaModel: pausa congela el objetivo",
+          (ant.setPaused(true), ant.setOrientation(45, 45, 45), ant.targetYaw === 180),
+          String(ant.targetYaw));
+        ant.setPaused(false);
+        ant.setConfig({ antenna: "omni" });
+        check("AntennaModel: setConfig reconstruye la geometría",
+          ant.nVerts > 0 && ant.antennaStart < ant.nVerts);
+        let antCfgOk = true;
+        for (const tipo of ["panel", "disco", "panel+disco", "omni", "ninguna"]) {
+          try {
+            ant.setConfig({ antenna: tipo });
+            ant._render();
+          } catch (e) { antCfgOk = false; break; }
+        }
+        check("AntennaModel: renderiza con cada tipo de antena", antCfgOk);
       } catch (e) {
         failures++;
         out.push("FAIL  excepción global — " + (e && e.stack ? e.stack : e));

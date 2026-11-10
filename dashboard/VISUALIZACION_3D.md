@@ -26,18 +26,22 @@ medidos — nunca con animación inventada.
 El renderizador es propio (Canvas 2D, sin Three.js ni CDN) porque el sistema
 debe funcionar sin Internet en el tramo rural (ver `ARQUITECTURA.md` §2.5).
 
-## 2. Dos movimientos, dos sensores, una estructura
+## 2. Dos movimientos, dos sensores, dos partes de la estructura
 
 El modelo combina dos fuentes independientes de movimiento, cada una
-gobernada por su sensor. Pueden actuar a la vez (torre inclinada *y*
-vibrando) y ninguna de las dos se recalcula en el navegador: el servidor las
-entrega ya calculadas en los campos `derived` del mensaje `sample`
-(`CONTRATO_DE_DATOS.md` §5).
+gobernada por su sensor y cada una sobre SU parte de la estructura. Pueden
+actuar a la vez (antena orientada *y* torre vibrando) y ninguna de las dos
+se recalcula en el navegador: el servidor las entrega ya calculadas en los
+campos `derived` del mensaje `sample` (`CONTRATO_DE_DATOS.md` §5).
 
 | Movimiento | Sensor | Campo del protocolo | Qué se ve |
 |---|---|---|---|
-| Inclinación (cuerpo rígido) | MPU6050 | `derived.roll/pitch/yaw` (grados) | La torre entera se inclina; HUD con los tres ángulos y la inclinación total |
+| Orientación (cuerpo rígido) | MPU6050 | `derived.roll/pitch/yaw` (grados) | **Solo el conjunto antena** (mástil + antenas) se orienta, articulado en el nudo de la cima; la celosía permanece erguida y fija. Además, un modelo 3D aislado de la antena en la tarjeta de Orientación gira con los mismos tres ángulos |
 | Vibración (respuesta dinámica) | ADXL345 | `derived.vib_rms`, `derived.vib_peak` (m/s²) | La celosía **balancea**; halo pulsátil en el punto de montaje del sensor |
+
+La partición es deliberada: la orientación del MPU6050 describe cómo está
+la ANTENA (la carga que monitorea la tesis), no una torre cayéndose; la
+respuesta dinámica al viento es la que mueve la estructura entera.
 
 Convención de ejes (idéntica en todo el proyecto, ver `processing/README.md`):
 +X derecha, +Y arriba, +Z hacia el espectador; la rotación se compone como
@@ -132,8 +136,9 @@ La lógica de alertas pertenece al capítulo de detección de anomalías.
 
 ## 4. Qué ve el analista en el panel
 
-1. **Torre de celosía** inclinándose (MPU6050) y balanceándose (ADXL345) en
-   tiempo real, con sombra proyectada y ejes de referencia.
+1. **Torre de celosía** fija, balanceándose con la vibración (ADXL345) en
+   tiempo real, con sombra proyectada y ejes de referencia; sobre ella, el
+   conjunto antena orientándose con el MPU6050.
 2. **HUD superior**: roll, pitch, yaw, inclinación total con semáforo,
    vibración RMS y vibración pico con barra de nivel frente al umbral.
 3. **Halos de vibración** en el punto de montaje del sensor.
@@ -208,6 +213,15 @@ mal cumplimentado (comprobado en el smoke test de §7).
 * **El balanceo se dibuja en el espacio del mundo** (plano horizontal), no
   ligado a los ejes del modelo inclinado: la deflexión es estructural,
   medida respecto al suelo.
+* **Partición estático/antena**: la geometría se construye en dos grupos de
+  vértices contiguos — celosía (fija en el mundo) y conjunto antena
+  (mástil + antenas) — y solo el segundo recibe la matriz de rotación de la
+  orientación, articulada en el nudo de la cima. El modelo de antena de la
+  tarjeta de Orientación (`AntennaModel`) comparte la MISMA geometría
+  (`buildAntennaAssembly`), la MISMA configuración y el MISMO motor de
+  pintado (`paintFaces`) que el modelo grande: dos visores, una sola fuente
+  de verdad, y el analista ve la antena grande moverse exactamente igual que
+  la pequeña.
 * **Robustez**: un frame con datos corruptos no tumba el dashboard (el bucle
   atrapa excepciones y continúa); sin muestras en 3 s el modelo se para y
   avisa; un hueco de datos no se integra como una rotación gigante.
@@ -228,4 +242,7 @@ mal cumplimentado (comprobado en el smoke test de §7).
   (`./.venv/bin/python -m server.run`), abrir `http://127.0.0.1:8000`,
   mover el ADXL345 y comprobar que el modelo se balancea en la dirección del
   movimiento, que la amplitud crece con la intensidad y que la barra de nivel
-  responde al umbral.
+  responde al umbral. Después, mover el MPU6050 y comprobar que **solo la
+  antena** se orienta (la celosía se queda erguida y fija), y que el modelo
+  3D de la tarjeta de Orientación gira con los mismos roll/pitch/yaw que
+  muestra el HUD.

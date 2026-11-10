@@ -183,6 +183,14 @@
     ? new window.TesisModel3D.TowerModel($("model3d-canvas"))
     : null;
 
+  // Modelo de antena aislado de la tarjeta de Orientación: la MISMA
+  // configuración de geometría que la torre (una sola fuente de verdad) y la
+  // misma orientación medida; mientras el modelo grande comunica vibración,
+  // este comunica hacia dónde apunta la antena.
+  const antenna3d = window.TesisModel3D && window.TesisModel3D.AntennaModel
+    ? new window.TesisModel3D.AntennaModel($("antenna3d"))
+    : null;
+
   // Umbral visual de la inclinación total, con la misma mecánica de
   // persistencia que el umbral de vibración (localStorage, tolerante a su
   // ausencia en modo privado). Semáforo: verde por debajo de 0.6·T, ámbar
@@ -238,8 +246,11 @@
       updateInclState();
     }
     // El modelo solo recibe el objetivo: se rota al ritmo de los datos sin
-    // acumular atraso (ver suavizado en model3d.js).
+    // acumular atraso (ver suavizado en model3d.js). La torre solo recibe la
+    // orientación para la antena; el modelo de antena de la tarjeta de
+    // Orientación gira entero con los mismos tres ángulos.
     if (model3d) model3d.setOrientation(roll, pitch, yaw);
+    if (antenna3d) antenna3d.setOrientation(roll, pitch, yaw);
   }
 
   /**
@@ -551,7 +562,8 @@
         noteKpi("orient", Math.max(Math.abs(roll), Math.abs(pitch)));
       }
 
-      // Modelo 3D: la torre se inclina con esta misma orientación derivada.
+      // Modelo 3D: la antena se orienta con esta misma orientación derivada
+      // (la celosía no se inclina: solo se balancea con la vibración).
       feedModel3D(roll, pitch, yaw);
 
       const am = Number(derived.accel_mag), gm = Number(derived.gyro_mag);
@@ -677,6 +689,7 @@
     if (model3d) {
       const fresh = !!state.lastSampleTs && Date.now() - state.lastSampleTs < MODEL3D_STALE_MS;
       model3d.setHasData(fresh);
+      if (antenna3d) antenna3d.setHasData(fresh);
       els.badgeModel3d.textContent = fresh ? "en vivo" : "sin datos";
       els.badgeModel3d.classList.toggle("badge-ok", fresh);
       els.badgeModel3d.classList.toggle("badge-off", !fresh);
@@ -809,6 +822,7 @@
   els.model3dPause.addEventListener("click", () => {
     model3dPaused = !model3dPaused;
     if (model3d) model3d.setPaused(model3dPaused);
+    if (antenna3d) antenna3d.setPaused(model3dPaused);
     els.model3dPause.textContent = model3dPaused ? "Reanudar" : "Pausar";
   });
 
@@ -883,11 +897,23 @@
     try { localStorage.setItem(MODEL3D_CFG_KEY, JSON.stringify(cfg)); } catch (err) { /* sin persistencia */ }
   }
 
+  /**
+   * Aplica una geometría a AMBOS modelos (torre y antena aislada) y devuelve
+   * la cfg ya saneada. Una sola fuente de verdad: si la antena de la torre es
+   * "disco", el modelo de la tarjeta de Orientación muestra ese mismo disco.
+   */
+  function applyGeom(cfg) {
+    const applied = model3d ? model3d.setConfig(cfg)
+      : window.TesisModel3D ? window.TesisModel3D.sanitizeCfg(cfg) : cfg;
+    if (antenna3d) antenna3d.setConfig(applied);
+    return applied;
+  }
+
   /** Restaurar predeterminados: la torre de referencia de la tesis. */
   function applyDefaultCfg() {
     const def = window.TesisModel3D ? window.TesisModel3D.DEFAULT_CFG : null;
     if (!def) return;
-    const applied = model3d ? model3d.setConfig(def) : def;
+    const applied = applyGeom(def);
     writeCfgForm(applied);
     try { localStorage.removeItem(MODEL3D_CFG_KEY); } catch (err) { /* sin persistencia */ }
     appendLog(Date.now(), "info", "modelo3d", "Geometría restaurada a los valores predeterminados");
@@ -902,15 +928,15 @@
     // sanitizeCfg completa huecos con los predeterminados: un localStorage
     // antiguo o a medias no deja el modelo a medio construir.
     const wanted = window.TesisModel3D.sanitizeCfg(saved || def);
-    const applied = model3d ? model3d.setConfig(wanted) : wanted;
+    const applied = applyGeom(wanted);
     writeCfgForm(applied);
     if (saved) saveCfg(applied); // normaliza lo persistido
     updateAntennaFields();
   }
 
   els.cfgApply.addEventListener("click", () => {
-    if (!model3d) return;
-    const applied = model3d.setConfig(readCfgForm());
+    if (!model3d && !antenna3d) return;
+    const applied = applyGeom(readCfgForm());
     writeCfgForm(applied); // refleja los recortes de rango aplicados
     saveCfg(applied);
     appendLog(Date.now(), "info", "modelo3d", `Geometría aplicada: ${applied.height} m de celosía, antena ${applied.antenna}`);

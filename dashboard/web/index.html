@@ -42,9 +42,10 @@
 
     <!-- ═══════════════════ modelo 3D de la torre ═══════════════════ -->
     <!-- Panel protagonista (primera fila destacada): la estructura real que
-         la tesis monitorea, inclinándose en tiempo real con la orientación
-         que el servidor calcula en derived.roll/pitch/yaw (CONTRATO §5).
-         La orientación NUNCA se recalcula en el cliente. -->
+         la tesis monitorea. La celosía permanece fija y BALANCEA con la
+         vibración medida (derived.vib_rms/vib_peak); solo el conjunto antena
+         se orienta con derived.roll/pitch/yaw (CONTRATO §5). La orientación
+         NUNCA se recalcula en el cliente. -->
     <section class="panel panel-model3d" id="panel-model3d" aria-labelledby="panel-model3d-title">
       <header class="panel-head">
         <h2 id="panel-model3d-title">Modelo 3D — Torre de monitoreo</h2>
@@ -85,7 +86,7 @@
 
       <div class="model3d-stage">
         <canvas id="model3d-canvas" role="img"
-                aria-label="Modelo 3D de la torre de celosía inclinándose con la orientación medida por el MPU6050"></canvas>
+                aria-label="Modelo 3D de la torre de celosía balanceándose con la vibración medida, con la antena orientándose con el MPU6050"></canvas>
       </div>
 
       <div class="model3d-controls">
@@ -93,7 +94,7 @@
         <button type="button" class="btn" id="model3d-pause">Pausar</button>
         <label class="legend-item"><input type="checkbox" id="model3d-axes" checked> Ejes</label>
         <label class="legend-item"><input type="checkbox" id="model3d-shadow" checked> Sombra</label>
-        <p class="help">Arrastre para orbitar la cámara · rueda para zoom · doble clic para restablecer la vista. La orientación y el balanceo del modelo los fija el sensor; la cámara es del operador.</p>
+        <p class="help">Arrastre para orbitar la cámara · rueda para zoom · doble clic para restablecer la vista. La celosía solo se balancea con la vibración medida; la orientación del MPU6050 mueve únicamente la antena (el modelo aislado de la antena está en la tarjeta de Orientación). La cámara es del operador.</p>
       </div>
 
       <!-- Configuración de la geometría: cada prueba de campo puede
@@ -280,6 +281,14 @@
           <div class="orientation-body">
             <div class="horizon-wrap">
               <canvas id="horizon" role="img" aria-label="Horizonte artificial con la inclinación actual"></canvas>
+            </div>
+            <!-- Modelo 3D de la antena: el mismo conjunto que remata la torre
+                 (mástil + antena configurada) girando con la orientación
+                 medida. Mientras el modelo grande comunica vibración, ESTE
+                 comunica hacia dónde apunta la antena (roll/pitch/yaw). -->
+            <div class="antenna3d-wrap">
+              <canvas id="antenna3d" role="img"
+                      aria-label="Modelo 3D de la antena girando con la orientación medida por el MPU6050"></canvas>
             </div>
             <dl class="orientation-values">
               <div><dt>Roll</dt><dd id="val-roll">—</dd></div>

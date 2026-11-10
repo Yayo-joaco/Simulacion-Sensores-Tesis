@@ -21,10 +21,14 @@
  * yawEff = -yaw y rollEff = -roll antes de componer R. Ambos visores se
  * mueven por tanto de forma idéntica ante la misma muestra.
  *
- * DOS fuentes independientes de movimiento sobre la misma estructura:
+ * DOS fuentes independientes de movimiento, cada una sobre SU parte de la
+ * estructura:
  *
- *   1. ORIENTACIÓN (MPU6050, derived.roll/pitch/yaw): la torre entera se
- *      inclina como cuerpo rígido. Es la inclinación lenta/persistente.
+ *   1. ORIENTACIÓN (MPU6050, derived.roll/pitch/yaw): SOLO el conjunto
+ *      antena (mástil + antenas) se mueve como cuerpo rígido, articulado
+ *      en el nudo de la cima de la celosía. La torre permanece erguida y
+ *      fija: la orientación del sensor describe cómo está la ANTENA, no
+ *      cómo se cae la estructura. Es la inclinación lenta/persistente.
  *   2. VIBRACIÓN (ADXL345, derived.vib_rms/vib_peak): la celosía BALANCEA
  *      con una forma aproximada de primer modo: parábola (y/H)² con la base
  *      fija (exacta bajo momento flector constante; muy próxima al primer
@@ -40,9 +44,10 @@
  *
  * Estructura del render por frame (painter's algorithm):
  *   1. Se compone la matriz de rotación 3x3 de la orientación medida.
- *   2. Cada vértice estático se rota, se le aplica la deflexión de balanceo
- *      (solo desplazamiento horizontal, proporcional a (y/H)²) y se
- *      transforma a espacio de cámara.
+ *   2. Los vértices de la celosía se usan tal cual (torre fija); los del
+ *      grupo antena se rotan alrededor del nudo de la cima. A ambos se les
+ *      aplica la deflexión de balanceo (solo desplazamiento horizontal,
+ *      proporcional a (y/H)²) y se transforman a espacio de cámara.
  *   3. Se proyecta en perspectiva a coordenadas de pantalla.
  *   4. Las caras se ordenan por profundidad del centroide y se pintan de
  *      lejos a cerca, con sombreado por normal y niebla suave por distancia.
@@ -310,6 +315,76 @@
   }
 
   /**
+   * Conjunto antena: mástil + la(s) antena(s) configurada(s), con el origen
+   * en la BASE del mástil (y = 0). Es un grupo aparte de la celosía porque es
+   * la única parte que se mueve con la orientación medida: se rota como
+   * cuerpo rígido alrededor de ese origen al montarlo sobre la torre. El
+   * mismo geometría alimenta el modelo de antena aislado de la tarjeta de
+   * orientación (AntennaModel): dos visores, una sola fuente de verdad.
+   */
+  function buildAntennaAssembly(cfg, beamScale) {
+    const b = { v: [], f: [] };
+    const mastH = cfg.mastHeight;
+    const hasMast = mastH >= 0.5;
+
+    if (hasMast) {
+      addBeam(b, 0, 0, 0, 0, mastH, 0, 0.09 * beamScale, RGB.mast);
+    }
+
+    // Antena panel: rectángulo vertical junto al mástil (o sobre el nudo si
+    // no hay mástil). El espesor (panelW) es el eje X; el ancho (panelD) va en Z.
+    const wantPanel = cfg.antenna === "panel" || cfg.antenna === "panel+disco";
+    const wantDish = cfg.antenna === "disco" || cfg.antenna === "panel+disco";
+    const wantOmni = cfg.antenna === "omni";
+    const antennaY = hasMast ? mastH * 0.58 : cfg.panelH / 2 + 0.3;
+    if (wantPanel) {
+      addBox(b, 0.62 * beamScale, antennaY, 0, cfg.panelW, cfg.panelH, cfg.panelD, RGB.panel);
+    }
+
+    // Disco de microondas: abanico poligonal con su brazo de sujeción. El
+    // brazo crece con el radio del disco para que no se clave en la cara.
+    if (wantDish) {
+      const dishR = cfg.dishD / 2;
+      const armY = hasMast ? mastH * 0.39 : 1.4;
+      const armLen = dishR * 0.65 + 0.25;
+      addBeam(b, 0, armY, 0, 0, armY, armLen, 0.05 * beamScale, RGB.mast);
+      addDisc(b, 0, armY, armLen + dishR * 0.85, dishR, 12, RGB.dish);
+    }
+
+    // Antena omnidireccional: elemento vertical esbelto con tres discos
+    // colineales (estilo dipolo colinear). Se remata sobre el mástil.
+    if (wantOmni) {
+      const omniTop = hasMast ? mastH : cfg.omniL;
+      const omniBase = omniTop - cfg.omniL;
+      addBox(b, 0, omniBase + cfg.omniL / 2, 0, 0.09, cfg.omniL, 0.09, RGB.omni);
+      for (let i = 0; i < 3; i++) {
+        const y = omniBase + cfg.omniL * (0.22 + 0.28 * i);
+        addDisc(b, 0, y, 0, cfg.omniR, 10, RGB.omni);
+      }
+    }
+
+    return b;
+  }
+
+  /**
+   * Anexa la geometría {v,f} de un submodelo al acumulador b, desplazada en
+   * Y, y devuelve el ÍNDICE del primer vértice anexado. Todo vértice desde
+   * ese índice pertenece al submodelo: es el rango que TowerModel rota con
+   * la orientación (grupo antena) frente al rango estático (celosía).
+   */
+  function appendGeo(b, geo, offsetY) {
+    const start = b.v.length / 3;
+    for (let i = 0; i < geo.v.length; i += 3) {
+      b.v.push(geo.v[i], geo.v[i + 1] + offsetY, geo.v[i + 2]);
+    }
+    for (const f of geo.f) {
+      const iv = f.iv.map((idx) => idx + start);
+      b.f.push({ iv, rgb: f.rgb, twoSided: f.twoSided });
+    }
+    return start;
+  }
+
+  /**
    * Torre de celosía de 4 patas parametrizada por cfg (ver DEFAULT_CFG):
    * base cuadrada que se estrecha tramo a tramo, anillo horizontal y cruz de
    * San Andrés (aspas) en las cuatro caras de cada tramo — lo que distingue
@@ -371,68 +446,156 @@
     const slabSide = cfg.baseWidth * 1.4;
     addBox(b, 0, -0.3, 0, slabSide, 0.6, slabSide, RGB.slab);
 
-    // 5. Remate: plataforma de servicio + mástil + antena(s) configurada(s).
+    // 5. Remate: plataforma de servicio. El conjunto antena (mástil +
+    //    antenas) NO se construye aquí: se anexa al FINAL como grupo aparte
+    //    para que su rango de vértices sea contiguo y el render pueda
+    //    rotarlo con la orientación medida dejando la celosía fija.
     const platSide = cfg.topWidth * 1.2 + 0.4;
     addBox(b, 0, H + 0.18, 0, platSide, 0.16, platSide, RGB.platform);
-
-    const mastH = cfg.mastHeight;
-    const hasMast = mastH >= 0.5;
-    if (hasMast) {
-      addBeam(b, 0, H, 0, 0, H + mastH, 0, 0.09 * beamScale, RGB.mast);
-    }
-
-    // Antena panel: rectángulo vertical junto al mástil (o a la cima si no
-    // hay mástil). El espesor (panelW) es el eje X; el ancho (panelD) va en Z.
-    const wantPanel = cfg.antenna === "panel" || cfg.antenna === "panel+disco";
-    const wantDish = cfg.antenna === "disco" || cfg.antenna === "panel+disco";
-    const wantOmni = cfg.antenna === "omni";
-    const antennaY = hasMast ? H + mastH * 0.58 : H + cfg.panelH / 2 + 0.3;
-    if (wantPanel) {
-      addBox(b, 0.62 * beamScale, antennaY, 0, cfg.panelW, cfg.panelH, cfg.panelD, RGB.panel);
-    }
-
-    // Disco de microondas: abanico poligonal con su brazo de sujeción. El
-    // brazo crece con el radio del disco para que no se clave en la cara.
-    if (wantDish) {
-      const dishR = cfg.dishD / 2;
-      const armY = hasMast ? H + mastH * 0.39 : H + 1.4;
-      const armLen = dishR * 0.65 + 0.25;
-      addBeam(b, 0, armY, 0, 0, armY, armLen, 0.05 * beamScale, RGB.mast);
-      addDisc(b, 0, armY, armLen + dishR * 0.85, dishR, 12, RGB.dish);
-    }
-
-    // Antena omnidireccional: elemento vertical esbelto con tres discos
-    // colineales (estilo dipolo colinear). Se remata sobre el mástil.
-    if (wantOmni) {
-      const omniTop = hasMast ? H + mastH : H + cfg.omniL;
-      const omniBase = omniTop - cfg.omniL;
-      addBox(b, 0, omniBase + cfg.omniL / 2, 0, 0.09, cfg.omniL, 0.09, RGB.omni);
-      for (let i = 0; i < 3; i++) {
-        const y = omniBase + cfg.omniL * (0.22 + 0.28 * i);
-        addDisc(b, 0, y, 0, cfg.omniR, 10, RGB.omni);
-      }
-    }
 
     // 6. Marcador del punto de montaje del sensor. IDEALIZACIÓN: en la
     //    realidad el sensor va fijado a un nudo de la celosía; aquí se
     //    representa como un cubo de acento cian en la cara +X a la altura
     //    fraccionaria configurada (por defecto la media) para que el
     //    operador vea "dónde mide" el sistema. Su ancla (sensorAnchor) es el
-    //    punto sobre el que pulsa el halo de vibración.
+    //    punto sobre el que pulsa el halo de vibración. PERTENECE AL GRUPO
+    //    ESTÁTICO: la orientación del sensor describe la antena, no la
+    //    celosía, y el marcador no debe despegarse de la viga que lo lleva.
     const kSens = N_SEG * cfg.sensorPos;
     const sensX = halfAt(kSens) + 0.32 * beamScale;
     const sensY = H * cfg.sensorPos;
     const cube = 0.46 * beamScale;
     addBox(b, sensX, sensY, 0, cube, cube, cube, RGB.sensor);
 
+    // 7. Grupo antena: se anexa el ÚLTIMO y su rango va de `antennaStart` al
+    //    final del buffer. El origen del submodelo es la base del mástil; al
+    //    desplazarlo a y = H el pivote de rotación queda en el nudo de la cima.
+    const antennaStart = appendGeo(b, buildAntennaAssembly(cfg, beamScale), H);
+
     return {
       verts: new Float32Array(b.v),
       faces: b.f,
       sensorAnchor: [sensX + cube / 2, sensY, 0],
+      antennaStart,
+      pivotY: H,
     };
   }
 
   // ─────────────────────────── renderizador ──────────────────────────────
+
+  /**
+   * Rellena la base ortonormal de una cámara orbital en `b` (objeto con
+   * cxw..czw, fx..fz, rx..rz, ux..uz, f). Convención del canvas: +X derecha,
+   * +Y arriba, +Z hacia el espectador. Con la cámara en +Z mirando al
+   * objetivo: right = forward × up_mundo da +X a la derecha y
+   * up_vista = right × forward da +Y arriba.
+   */
+  function fillOrbitBasis(b, cam, target, w, h) {
+    const ce = Math.cos(cam.el), se = Math.sin(cam.el);
+    b.cxw = target[0] + cam.dist * ce * Math.sin(cam.az);
+    b.cyw = target[1] + cam.dist * se;
+    b.czw = target[2] + cam.dist * ce * Math.cos(cam.az);
+    // forward = normalizar(objetivo - cámara)
+    let fx = target[0] - b.cxw, fy = target[1] - b.cyw, fz = target[2] - b.czw;
+    const fl = Math.sqrt(fx * fx + fy * fy + fz * fz) || 1;
+    fx /= fl; fy /= fl; fz /= fl;
+    b.fx = fx; b.fy = fy; b.fz = fz;
+    // right = forward × up_mundo (up_mundo = +Y), con ry = 0 siempre.
+    let rx = -fz, ry = 0, rz = fx;
+    const rl = Math.sqrt(rx * rx + rz * rz) || 1;
+    rx /= rl; rz /= rl;
+    b.rx = rx; b.ry = ry; b.rz = rz;
+    // up_vista = right × forward
+    b.ux = ry * fz - rz * fy;
+    b.uy = rz * fx - rx * fz;
+    b.uz = rx * fy - ry * fx;
+    b.f = h * 1.12; // distancia focal en píxeles (FOV implícito ~48°)
+    return b;
+  }
+
+  /**
+   * Painter's algorithm compartido por TowerModel y AntennaModel:
+   * profundidad por cara (centroide en espacio de cámara), ordenado de lejos
+   * a cerca y pintado con sombreado por normal y niebla por distancia.
+   *
+   * `scene` expone faces/world/view/screen/depth/order/nFaces/colorCache;
+   * `basis` es la base ortonormal de la cámara; `fogNear`/`fogSpan` acotan
+   * la niebla. Cero asignaciones nuevas por frame (arrays reciclados).
+   */
+  function paintFaces(ctx, scene, basis, fogNear, fogSpan) {
+    const faces = scene.faces, depth = scene.depth, order = scene.order;
+    const world = scene.world, view = scene.view, screen = scene.screen;
+    const nF = scene.nFaces;
+    for (let i = 0; i < nF; i++) {
+      const iv = faces[i].iv;
+      let d = 0;
+      for (let k = 0; k < iv.length; k++) d += view[iv[k] * 3 + 2];
+      depth[i] = d / iv.length;
+    }
+    // Painter's algorithm: de lejos a cerca. sort sobre el array de
+    // índices ya reservado: cero asignaciones nuevas por frame.
+    order.sort((a, b) => depth[b] - depth[a]);
+
+    const cxw = basis.cxw, cyw = basis.cyw, czw = basis.czw;
+    for (let oi = 0; oi < nF; oi++) {
+      const fi = order[oi];
+      const face = faces[fi];
+      const iv = face.iv;
+      const i0 = iv[0] * 3, i1 = iv[1] * 3, i2 = iv[2] * 3;
+      // Normal de la cara a partir de los vértices YA transformados (espacio
+      // del mundo): así el foco fijo ilumina la escena aunque la cámara
+      // orbite y aunque el modelo se mueva.
+      const ax = world[i1] - world[i0], ay = world[i1 + 1] - world[i0 + 1], az = world[i1 + 2] - world[i0 + 2];
+      const bx = world[i2] - world[i0], by = world[i2 + 1] - world[i0 + 1], bz = world[i2 + 2] - world[i0 + 2];
+      let nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
+      const nl = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+      nx /= nl; ny /= nl; nz /= nl;
+      // Prueba de visibilidad (backface culling): el producto punto de la
+      // normal con el vector cámara→vértice dice qué lado de la cara mira a
+      // la cámara. Las vigas y las cajas son sólidos convexos CERRADOS: su
+      // cara trasera queda siempre tapada por la frontal en el orden
+      // painter, así que se descarta y se ahorra ~50 % de fill+stroke por
+      // frame. Los abanicos sin espesor (addDisc) se pintan por ambas caras.
+      const c0 = iv[0];
+      const dirx = world[c0 * 3] - cxw, diry = world[c0 * 3 + 1] - cyw, dirz = world[c0 * 3 + 2] - czw;
+      const back = (nx * dirx + ny * diry + nz * dirz) > 0;
+      if (back && !face.twoSided) continue;
+      // Se voltea la normal hacia la cámara: el lado visible siempre se
+      // ilumina de forma consistente, sin depender del sentido del trazado.
+      if (back) { nx = -nx; ny = -ny; nz = -nz; }
+
+      let diff = nx * LIGHT[0] + ny * LIGHT[1] + nz * LIGHT[2];
+      if (diff < 0) diff = 0;
+      const shade = AMBIENT + (1 - AMBIENT) * diff;
+
+      // Niebla suave: las caras lejanas se mezclan con el fondo del panel.
+      const fog = clamp((depth[fi] - fogNear) / fogSpan, 0, 0.72);
+      const base = face.rgb;
+      const r = Math.round((base[0] * shade) * (1 - fog) + FOG_RGB[0] * fog);
+      const g = Math.round((base[1] * shade) * (1 - fog) + FOG_RGB[1] * fog);
+      const bl = Math.round((base[2] * shade) * (1 - fog) + FOG_RGB[2] * fog);
+
+      // Color cacheado por RGB cuantizado: sin cadenas nuevas por frame.
+      const key = ((r >> 3) << 10) | ((g >> 3) << 5) | (bl >> 3);
+      let style = scene.colorCache.get(key);
+      if (style === undefined) {
+        style = "rgb(" + ((r >> 3) << 3) + "," + ((g >> 3) << 3) + "," + ((bl >> 3) << 3) + ")";
+        scene.colorCache.set(key, style);
+      }
+
+      ctx.beginPath();
+      ctx.moveTo(screen[iv[0] * 2], screen[iv[0] * 2 + 1]);
+      for (let k = 1; k < iv.length; k++) ctx.lineTo(screen[iv[k] * 2], screen[iv[k] * 2 + 1]);
+      ctx.closePath();
+      ctx.fillStyle = style;
+      ctx.fill();
+      // Trazo del mismo color: elimina las costuras entre caras contiguas
+      // que deja el antialiasizado del relleno.
+      ctx.strokeStyle = style;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  }
 
   /**
    * TowerModel — modelo 3D de la torre: inclinación por orientación medida
@@ -532,6 +695,11 @@
       this.verts = geo.verts;               // vértices del modelo en metros
       this.faces = geo.faces;               // caras con índices y color base
       this.sensorAnchor = geo.sensorAnchor; // punto de montaje del sensor
+      // Partición estático/antena: los vértices [antennaStart, nVerts) son el
+      // conjunto antena (mástil + antenas) y los únicos que rotan con la
+      // orientación medida; el resto es la celosía, fija en el mundo.
+      this.antennaStart = geo.antennaStart || 0;
+      this.pivotY = geo.pivotY || 0;        // nudo de la cima: pivote del grupo
       this.nVerts = geo.verts.length / 3;
       this.nFaces = geo.faces.length;
       this.world = new Float32Array(this.nVerts * 3); // tras la rotación medida
@@ -754,33 +922,10 @@
 
     /**
      * Construye la base ortonormal de la cámara orbital y la reutiliza.
-     * Convención del canvas: +X derecha, +Y arriba, +Z hacia el espectador.
-     * Con la cámara en +Z mirando al origen: right = forward × up_mundo
-     * da +X a la derecha y up_vista = right × forward da +Y arriba.
+     * La matemática vive en fillOrbitBasis (compartida con AntennaModel).
      */
     _camera(w, h) {
-      const b = this._basis;
-      const cam = this.cam, tgt = this.target;
-      const ce = Math.cos(cam.el), se = Math.sin(cam.el);
-      b.cxw = tgt[0] + cam.dist * ce * Math.sin(cam.az);
-      b.cyw = tgt[1] + cam.dist * se;
-      b.czw = tgt[2] + cam.dist * ce * Math.cos(cam.az);
-      // forward = normalizar(objetivo - cámara)
-      let fx = tgt[0] - b.cxw, fy = tgt[1] - b.cyw, fz = tgt[2] - b.czw;
-      const fl = Math.sqrt(fx * fx + fy * fy + fz * fz) || 1;
-      fx /= fl; fy /= fl; fz /= fl;
-      b.fx = fx; b.fy = fy; b.fz = fz;
-      // right = forward × up_mundo (up_mundo = +Y), con ry = 0 siempre.
-      let rx = -fz, ry = 0, rz = fx;
-      const rl = Math.sqrt(rx * rx + rz * rz) || 1;
-      rx /= rl; rz /= rl;
-      b.rx = rx; b.ry = ry; b.rz = rz;
-      // up_vista = right × forward
-      b.ux = ry * fz - rz * fy;
-      b.uy = rz * fx - rx * fz;
-      b.uz = rx * fy - ry * fx;
-      b.f = h * 1.12; // distancia focal en píxeles (FOV implícito ~48°)
-      return b;
+      return fillOrbitBasis(this._basis, this.cam, this.target, w, h);
     }
 
     _render(nowMs) {
@@ -841,15 +986,26 @@
       // _drawVibrationHalo sin repetir el cálculo (y sin riesgo de divergir).
       this._swayDisp = swayDisp;
 
-      // 3. Rotar cada vértice con la matriz medida, aplicar la deflexión de
-      //    balanceo en el plano horizontal del mundo y proyectar.
+      // 3. Transformar cada vértice: la celosía va tal cual (fija); el grupo
+      //    antena se rota como cuerpo rígido alrededor del nudo de la cima.
+      //    A ambos se les aplica la deflexión de balanceo en el plano
+      //    horizontal del mundo, y se proyecta a la cámara.
       const rot = this.rot, world = this.world, view = this.view, screen = this.screen;
       const nV = this.nVerts;
+      const aStart = this.antennaStart, pivotY = this.pivotY;
       for (let i = 0; i < nV; i++) {
         const x = this.verts[i * 3], y = this.verts[i * 3 + 1], z = this.verts[i * 3 + 2];
-        let wx = rot[0] * x + rot[1] * y + rot[2] * z;
-        let wy = rot[3] * x + rot[4] * y + rot[5] * z;
-        let wz = rot[6] * x + rot[7] * y + rot[8] * z;
+        let wx, wy, wz;
+        if (i >= aStart) {
+          // Antena: R·(p − pivote) + pivote, con el pivote en el eje del
+          // mástil a la altura de la cima (0, pivotY, 0).
+          const yy = y - pivotY;
+          wx = rot[0] * x + rot[1] * yy + rot[2] * z;
+          wy = rot[3] * x + rot[4] * yy + rot[5] * z + pivotY;
+          wz = rot[6] * x + rot[7] * yy + rot[8] * z;
+        } else {
+          wx = x; wy = y; wz = z;
+        }
         if (swayDisp !== 0) {
           const t = y * invH;
           const d = swayDisp * t * t;
@@ -872,79 +1028,11 @@
       // 4. Sombra proyectada en el suelo (si está activada).
       if (this.showShadow) this._drawShadow(ctx);
 
-      // 5. Profundidad por cara (centroide en espacio de cámara) y ordenado.
-      const faces = this.faces, depth = this.depth, order = this.order;
-      const nF = this.nFaces;
-      for (let i = 0; i < nF; i++) {
-        const iv = faces[i].iv;
-        let d = 0;
-        for (let k = 0; k < iv.length; k++) d += view[iv[k] * 3 + 2];
-        depth[i] = d / iv.length;
-      }
-      // Painter's algorithm: de lejos a cerca. sort sobre el array de
-      // índices ya reservado: cero asignaciones nuevas por frame.
-      order.sort((a, b) => depth[b] - depth[a]);
-
-      // 6. Pintado de caras con sombreado por normal y niebla por distancia.
+      // 5-6. Profundidad por cara, ordenado y pintado (painter's algorithm).
+      //      El motor de caras es el MISMO que el del modelo de antena de la
+      //      tarjeta de orientación (función module-level paintFaces).
       const fogNear = cam.dist * 0.5, fogSpan = cam.dist * 1.25;
-      for (let oi = 0; oi < nF; oi++) {
-        const fi = order[oi];
-        const face = faces[fi];
-        const iv = face.iv;
-        const i0 = iv[0] * 3, i1 = iv[1] * 3, i2 = iv[2] * 3;
-        // Normal de la cara a partir de los vértices YA rotados (espacio
-        // del mundo): así el foco fijo ilumina la torre aunque la cámara
-        // orbite y aunque la torre se incline.
-        const ax = world[i1] - world[i0], ay = world[i1 + 1] - world[i0 + 1], az = world[i1 + 2] - world[i0 + 2];
-        const bx = world[i2] - world[i0], by = world[i2 + 1] - world[i0 + 1], bz = world[i2 + 2] - world[i0 + 2];
-        let nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
-        const nl = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
-        nx /= nl; ny /= nl; nz /= nl;
-        // Prueba de visibilidad (backface culling): el producto punto de la
-        // normal con el vector cámara→vértice dice qué lado de la cara mira a
-        // la cámara. Las vigas y las cajas son sólidos convexos CERRADOS: su
-        // cara trasera queda siempre tapada por la frontal en el orden
-        // painter, así que se descarta y se ahorra ~50 % de fill+stroke por
-        // frame. Los abanicos sin espesor (addDisc) se pintan por ambas caras.
-        const c0 = iv[0];
-        const dirx = world[c0 * 3] - cxw, diry = world[c0 * 3 + 1] - cyw, dirz = world[c0 * 3 + 2] - czw;
-        const back = (nx * dirx + ny * diry + nz * dirz) > 0;
-        if (back && !face.twoSided) continue;
-        // Se voltea la normal hacia la cámara: el lado visible siempre se
-        // ilumina de forma consistente, sin depender del sentido del trazado.
-        if (back) { nx = -nx; ny = -ny; nz = -nz; }
-
-        let diff = nx * LIGHT[0] + ny * LIGHT[1] + nz * LIGHT[2];
-        if (diff < 0) diff = 0;
-        const shade = AMBIENT + (1 - AMBIENT) * diff;
-
-        // Niebla suave: las caras lejanas se mezclan con el fondo del panel.
-        const fog = clamp((depth[fi] - fogNear) / fogSpan, 0, 0.72);
-        const base = face.rgb;
-        const r = Math.round((base[0] * shade) * (1 - fog) + FOG_RGB[0] * fog);
-        const g = Math.round((base[1] * shade) * (1 - fog) + FOG_RGB[1] * fog);
-        const bl = Math.round((base[2] * shade) * (1 - fog) + FOG_RGB[2] * fog);
-
-        // Color cacheado por RGB cuantizado: sin cadenas nuevas por frame.
-        const key = ((r >> 3) << 10) | ((g >> 3) << 5) | (bl >> 3);
-        let style = this.colorCache.get(key);
-        if (style === undefined) {
-          style = "rgb(" + ((r >> 3) << 3) + "," + ((g >> 3) << 3) + "," + ((bl >> 3) << 3) + ")";
-          this.colorCache.set(key, style);
-        }
-
-        ctx.beginPath();
-        ctx.moveTo(screen[iv[0] * 2], screen[iv[0] * 2 + 1]);
-        for (let k = 1; k < iv.length; k++) ctx.lineTo(screen[iv[k] * 2], screen[iv[k] * 2 + 1]);
-        ctx.closePath();
-        ctx.fillStyle = style;
-        ctx.fill();
-        // Trazo del mismo color: elimina las costuras entre caras contiguas
-        // que deja el antialiasizado del relleno.
-        ctx.strokeStyle = style;
-        ctx.lineWidth = 1;
-        ctx.stroke();
-      }
+      paintFaces(ctx, this, basis, fogNear, fogSpan);
 
       // 7. Ejes de referencia dibujados encima de la geometría (son una
       //    ayuda de lectura, no parte de la escena sombreada).
@@ -968,21 +1056,18 @@
      * radio y opacidad siguen a vib_peak (0–1). Comunica "aquí se mide y aquí
      * está entrando la energía de vibración" sin competir con la geometría.
      *
-     * El ancla se transforma AQUÍ igual que los vértices en _render (rotación
-     * medida + deflexión de balanceo del frame) antes de proyectarla: si se
-     * proyectara en coordenadas de modelo, el halo se despegaría del cubo del
-     * sensor en cuanto la torre se inclinase o balancease — y como el yaw
-     * deriva en datos reales, llegaría a orbitar la torre.
+     * El ancla pertenece al grupo ESTÁTICO de la celosía: la orientación
+     * medida ya no la rota (describe la antena, no la torre), de modo que la
+     * única transformación que recibe es la deflexión de balanceo del frame —
+     * la misma que los vértices de su viga en _render. Sin esto el halo se
+     * despegaría del cubo del sensor en cuanto la torre balancease.
      */
     _drawVibrationHalo(ctx, w, h) {
       const halo = this.vibHalo;
       const a = this.sensorAnchor;
-      const rot = this.rot;
-      // Misma transformación que el bucle de vértices: R·p y, encima, la
-      // deflexión horizontal (y/H)²·swayDisp del frame actual.
-      let ax = rot[0] * a[0] + rot[1] * a[1] + rot[2] * a[2];
-      let ay = rot[3] * a[0] + rot[4] * a[1] + rot[5] * a[2];
-      let az = rot[6] * a[0] + rot[7] * a[1] + rot[8] * a[2];
+      // Misma transformación que el bucle de vértices del grupo estático:
+      // posición de modelo + deflexión horizontal (y/H)²·swayDisp del frame.
+      let ax = a[0], ay = a[1], az = a[2];
       const swayDisp = this._swayDisp;
       if (swayDisp) {
         const t = a[1] / this.cfg.height;
@@ -1015,30 +1100,21 @@
       ctx.stroke();
     }
 
-    /** Elipse atenuada en el suelo que se deforma y desplaza con la inclinación. */
+    /** Elipse atenuada en el suelo que se desplaza con el balanceo. */
     _drawShadow(ctx) {
-      // La inclinación desplaza la cima de la torre en el plano del suelo:
-      // el vector up del modelo rotado, R·(0,1,0), es la SEGUNDA columna de
-      // la matriz rot (fila mayor): de ahí rot[1] y rot[7].
-      const rot = this.rot;
-      const ux = rot[1], uz = rot[7];
-      const tilt = Math.sqrt(ux * ux + uz * uz);
-      // Centro del sombreado: a mitad de camino entre la base y la proyección
-      // vertical de la cima (altura efectiva de la celosía + mástil).
-      const H = this.cfg.height + this.cfg.mastHeight;
-      const cx = ux * H * 0.5, cz = uz * H * 0.5;
-      const dirX = tilt > 1e-4 ? ux / tilt : 1, dirZ = tilt > 1e-4 ? uz / tilt : 0;
-      // Eje largo del elipse alineado con la dirección de la inclinación; el
-      // alargamiento crece con el tilt para sugerir una sombra proyectada.
+      // La celosía ya no se inclina con la orientación (solo la antena), de
+      // modo que la sombra es una elipse fija en el origen. Lo único que la
+      // mueve es el balanceo: se desplaza con la deflexión de la cima para
+      // sugerir el vaivén de la estructura bajo el viento.
+      const swayDisp = this._swayDisp;
+      const cx = this.swayDir[0] * swayDisp * 0.55, cz = this.swayDir[1] * swayDisp * 0.55;
       const baseR = 1.8 * clamp(this.cfg.baseWidth / 6, 0.5, 2.5);
-      const a = baseR + tilt * H * 0.85, bAxis = baseR * (1 - tilt * 0.35);
       const pts = this.shadowPts;
       const n = 25;
       for (let i = 0; i < n; i++) {
         const ang = (i / n) * Math.PI * 2;
-        const ca = Math.cos(ang) * a, sa = Math.sin(ang) * bAxis;
-        const px = cx + dirX * ca - dirZ * sa;
-        const pz = cz + dirZ * ca + dirX * sa;
+        const px = cx + Math.cos(ang) * baseR;
+        const pz = cz + Math.sin(ang) * baseR;
         // Proyección del punto del suelo con la misma cámara que la escena.
         pts[i * 2] = px; pts[i * 2 + 1] = pz; // se proyecta abajo
       }
@@ -1106,5 +1182,244 @@
     }
   }
 
-  global.TesisModel3D = { TowerModel, DEFAULT_CFG, sanitizeCfg };
+  /**
+   * AntennaModel — modelo 3D del conjunto antena para la tarjeta de
+   * "Orientación" del panel MPU6050.
+   *
+   * Mientras el modelo de la torre comunica "la estructura vibra" (celosía
+   * fija + balanceo por vibración), ESTE comunica "la antena apunta así":
+   * la misma geometría que remata la torre (buildAntennaAssembly, con la
+   * configuración de antena activa) girando como cuerpo rígido con la
+   * orientación medida (derived.roll/pitch/yaw), articulada sobre su placa
+   * de montaje, que se queda fija como referencia del suelo.
+   *
+   * Uso desde app.js:
+   *   const ant = new AntennaModel(canvas);
+   *   ant.setOrientation(roll, pitch, yaw);  // grados, del mensaje "sample"
+   *   ant.setConfig(cfg);                    // misma cfg que la torre
+   *   ant.setHasData(false);                 // estado sin datos
+   */
+  class AntennaModel {
+    constructor(canvas) {
+      this.canvas = canvas;
+      this.ctx = canvas.getContext("2d");
+      this.cfg = sanitizeCfg(null);
+      // Cámara y objetivo ANTES de _build(): el encuadre se deriva de la
+      // geometría construida.
+      this.cam = { az: 0.72, el: 0.30, dist: 12 };
+      this.target = [0, 1.2, 0];
+      this._build();
+
+      this.rot = new Float64Array(9);
+      // Orientación objetivo + valor suavizado (mismo criterio que TowerModel).
+      this.roll = 0; this.pitch = 0; this.yaw = 0;
+      this.targetRoll = 0; this.targetPitch = 0; this.targetYaw = 0;
+
+      this.hasData = false;
+      this.paused = false;
+      this._dirty = true;
+      this.colorCache = new Map();
+      this._basis = {
+        cxw: 0, cyw: 0, czw: 0,
+        fx: 0, fy: 0, fz: 0,
+        rx: 0, ry: 0, rz: 0,
+        ux: 0, uy: 0, uz: 0,
+        f: 0,
+      };
+
+      this._loop = this._loop.bind(this);
+      requestAnimationFrame(this._loop);
+    }
+
+    /** (Re)construye la geometría: placa fija + grupo antena rotatorio. */
+    _build() {
+      const beamScale = clamp(this.cfg.height / 20, 0.7, 2.2);
+      const b = { v: [], f: [] };
+      // Placa de montaje: referencia fija del "suelo" del visor. Solo se
+      // dibuja si hay algo que rematar (si no, la placa flotaría vacía).
+      const plate = clamp(this.cfg.topWidth * 1.2 + 0.4, 1.2, 6);
+      addBox(b, 0, -0.12, 0, plate, 0.24, plate, RGB.platform);
+      // Grupo antena: se rota entero alrededor del origen (base del mástil).
+      const antennaStart = appendGeo(b, buildAntennaAssembly(this.cfg, beamScale), 0);
+
+      this.verts = new Float32Array(b.v);
+      this.faces = b.f;
+      this.antennaStart = antennaStart;
+      this.nVerts = this.verts.length / 3;
+      this.nFaces = this.faces.length;
+      this.world = new Float32Array(this.nVerts * 3);
+      this.view = new Float32Array(this.nVerts * 3);
+      this.screen = new Float32Array(this.nVerts * 2);
+      this.depth = new Float32Array(this.nFaces);
+      this.order = new Array(this.nFaces);
+      for (let i = 0; i < this.nFaces; i++) this.order[i] = i;
+
+      // Encuadre fijo: el conjunto antena entero cabe con margen, y la
+      // distancia no se mueve con la orientación (el operador compara ángulos,
+      // no perspectivas).
+      const span = this.cfg.mastHeight +
+        Math.max(this.cfg.panelH, this.cfg.dishD, this.cfg.omniL) + 1.5;
+      this.target = [0, span * 0.42, 0];
+      this.cam.dist = clamp(span * 2.4, 6, 40);
+    }
+
+    // ────────────────────────── interfaz pública ─────────────────────────
+
+    /** Nueva orientación medida (grados, campos derived del contrato). */
+    setOrientation(roll, pitch, yaw) {
+      if (this.paused) return;
+      if (Number.isFinite(roll)) this.targetRoll = roll;
+      if (Number.isFinite(pitch)) this.targetPitch = pitch;
+      if (Number.isFinite(yaw)) this.targetYaw = yaw;
+      this._dirty = true;
+    }
+
+    /** Cambia la geometría (la MISMA cfg de la torre: una antena, dos visores). */
+    setConfig(cfg) {
+      this.cfg = sanitizeCfg(cfg);
+      this._build();
+      this.colorCache.clear();
+      this._dirty = true;
+      return this.cfg;
+    }
+
+    /** Sin datos: la antena queda quieta y se avisa sobre el canvas. */
+    setHasData(has) {
+      const next = !!has;
+      if (next !== this.hasData) this._dirty = true;
+      this.hasData = next;
+    }
+
+    /** Pausar congela la orientación. */
+    setPaused(p) {
+      const next = !!p;
+      if (next !== this.paused) this._dirty = true;
+      this.paused = next;
+    }
+
+    // ────────────────────────────── pintado ──────────────────────────────
+
+    _converged() {
+      return Math.abs(wrap180(this.targetRoll - this.roll)) < 0.02 &&
+        Math.abs(wrap180(this.targetPitch - this.pitch)) < 0.02 &&
+        Math.abs(wrap180(this.targetYaw - this.yaw)) < 0.02;
+    }
+
+    _loop() {
+      // Salto de frame con el suavizado convergido: mismo criterio de
+      // ahorro que TowerModel (el canvas conserva el último frame).
+      const dpr = global.devicePixelRatio || 1;
+      const w = this.canvas.clientWidth, h = this.canvas.clientHeight;
+      const resized = this.canvas.width !== Math.round(w * dpr) ||
+        this.canvas.height !== Math.round(h * dpr);
+      if (!this._dirty && !resized && this._converged()) {
+        requestAnimationFrame(this._loop);
+        return;
+      }
+      this._dirty = false;
+      try {
+        this._render();
+      } catch (err) {
+        // Un frame con datos corruptos no debe tumbar el dashboard entero.
+        console.error("antenna3d:", err);
+      }
+      requestAnimationFrame(this._loop);
+    }
+
+    _render() {
+      const canvas = this.canvas, ctx = this.ctx;
+      const dpr = global.devicePixelRatio || 1;
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      if (w === 0 || h === 0) return;
+      if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+        canvas.width = Math.round(w * dpr);
+        canvas.height = Math.round(h * dpr);
+      }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.fillStyle = "#121b2e";
+      ctx.fillRect(0, 0, w, h);
+
+      // Suavizado exponencial hacia la última orientación (que el modelo de
+      // la torre y el de la antena usen el MISMO factor es lo que los hace
+      // moverse "a la vez" ante la misma muestra).
+      this.roll = wrap180(this.roll + wrap180(this.targetRoll - this.roll) * SMOOTH);
+      this.pitch = wrap180(this.pitch + wrap180(this.targetPitch - this.pitch) * SMOOTH);
+      this.yaw = wrap180(this.yaw + wrap180(this.targetYaw - this.yaw) * SMOOTH);
+      rotationMatrix(this.rot, this.roll, this.pitch, this.yaw);
+
+      const basis = fillOrbitBasis(this._basis, this.cam, this.target, w, h);
+      const rot = this.rot, world = this.world, view = this.view, screen = this.screen;
+      const nV = this.nVerts, aStart = this.antennaStart;
+      for (let i = 0; i < nV; i++) {
+        const x = this.verts[i * 3], y = this.verts[i * 3 + 1], z = this.verts[i * 3 + 2];
+        let wx, wy, wz;
+        if (i >= aStart) {
+          // Grupo antena: rotación de cuerpo rígido alrededor de la base del
+          // mástil (el origen), que es su articulación sobre la placa fija.
+          wx = rot[0] * x + rot[1] * y + rot[2] * z;
+          wy = rot[3] * x + rot[4] * y + rot[5] * z;
+          wz = rot[6] * x + rot[7] * y + rot[8] * z;
+        } else {
+          wx = x; wy = y; wz = z;
+        }
+        world[i * 3] = wx; world[i * 3 + 1] = wy; world[i * 3 + 2] = wz;
+        const dx = wx - basis.cxw, dy = wy - basis.cyw, dz = wz - basis.czw;
+        const vx = dx * basis.rx + dy * basis.ry + dz * basis.rz;
+        const vy = dx * basis.ux + dy * basis.uy + dz * basis.uz;
+        const vz = dx * basis.fx + dy * basis.fy + dz * basis.fz;
+        view[i * 3] = vx; view[i * 3 + 1] = vy; view[i * 3 + 2] = vz;
+        const inv = vz > 0.2 ? 1 / vz : 1 / 0.2;
+        screen[i * 2] = w / 2 + basis.f * vx * inv;
+        screen[i * 2 + 1] = h / 2 - basis.f * vy * inv;
+      }
+
+      const fogNear = this.cam.dist * 0.5, fogSpan = this.cam.dist * 1.25;
+      paintFaces(ctx, this, basis, fogNear, fogSpan);
+      this._drawAxes(ctx, w, h, basis);
+
+      if (!this.hasData) {
+        ctx.fillStyle = "rgba(232, 238, 252, 0.92)";
+        ctx.font = "600 13px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("Sin datos", w / 2, 15);
+      }
+    }
+
+    /**
+     * Ejes de referencia desde el origen (X roja, Y verde, Z azul), con la
+     * MISMA convención de colores que la torre. En una antena de revolución
+     * (omni) el yaw sería invisible sin ellos.
+     */
+    _drawAxes(ctx, w, h, basis) {
+      const L = clamp(this.cam.dist * 0.32, 1.2, 6);
+      const axes = [
+        { to: [L, 0, 0], color: "#ff5a5a" },
+        { to: [0, L, 0], color: "#64eb96" },
+        { to: [0, 0, L], color: "#64aaff" },
+      ];
+      const project = (x, y, z, out) => {
+        const dx = x - basis.cxw, dy = y - basis.cyw, dz = z - basis.czw;
+        const vx = dx * basis.rx + dy * basis.ry + dz * basis.rz;
+        const vy = dx * basis.ux + dy * basis.uy + dz * basis.uz;
+        const vz = dx * basis.fx + dy * basis.fy + dz * basis.fz;
+        const inv = vz > 0.2 ? 1 / vz : 1 / 0.2;
+        out[0] = w / 2 + basis.f * vx * inv;
+        out[1] = h / 2 - basis.f * vy * inv;
+      };
+      const p0 = [0, 0], p1 = [0, 0];
+      ctx.lineWidth = 2;
+      for (const ax of axes) {
+        project(0, 0, 0, p0);
+        project(ax.to[0], ax.to[1], ax.to[2], p1);
+        ctx.strokeStyle = ax.color;
+        ctx.beginPath();
+        ctx.moveTo(p0[0], p0[1]);
+        ctx.lineTo(p1[0], p1[1]);
+        ctx.stroke();
+      }
+    }
+  }
+
+  global.TesisModel3D = { TowerModel, AntennaModel, DEFAULT_CFG, sanitizeCfg };
 })(window);

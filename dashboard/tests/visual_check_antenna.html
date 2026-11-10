@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<!--
+  visual_check_antenna.html — verificación VISUAL de la partición
+  estático/antena (lo que las aserciones numéricas no pueden ver).
+
+  Renderiza los DOS modelos con una orientación fija y dramática
+  (roll=25°, pitch=-15°, yaw=40°) para que un humano (o una captura)
+  compruebe de un vistazo que:
+    · la celosía de la torre queda ERGUIDA (solo la antena se orienta);
+    · la antena de la torre queda inclinada;
+    · el modelo aislado de la tarjeta de Orientación gira igual.
+
+  Captura (headless):
+    chrome --headless=new --disable-gpu --window-size=1200,600 \
+      --screenshot=/tmp/visual_check.png \
+      "file://$(pwd)/tests/visual_check_antenna.html"
+-->
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>visual_check_antenna</title>
+  <style>
+    body { margin: 0; background: #0b1220; color: #e8eefc;
+           font: 13px system-ui, sans-serif; display: flex; gap: 8px; }
+    figure { margin: 0; }
+    figcaption { padding: 6px 4px; text-align: center; }
+    canvas { background: #121b2e; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <figure><figcaption>Torre (roll=25 pitch=-15 yaw=40) — celosía debe quedar erguida</figcaption>
+    <canvas id="tower" width="560" height="480"></canvas></figure>
+  <figure><figcaption>Antena aislada (misma orientación)</figcaption>
+    <canvas id="ant" width="360" height="480"></canvas></figure>
+  <script src="../web/js/model3d.js"></script>
+  <script>
+    (function () {
+      "use strict";
+      const raf = window.requestAnimationFrame;
+      window.requestAnimationFrame = function () { return 0; };
+      const M = window.TesisModel3D;
+      const tower = new M.TowerModel(document.getElementById("tower"));
+      const ant = new M.AntennaModel(document.getElementById("ant"));
+      // Objetivo y estado al MISMO valor: el suavizado no arrastra y el
+      // primer render ya muestra la orientación pedida.
+      for (const m of [tower, ant]) {
+        m.setHasData(true);
+        m.setOrientation(25, -15, 40);
+        m.roll = 25; m.pitch = -15; m.yaw = 40;
+        m._render(16);
+      }
+      window.requestAnimationFrame = raf;
+      document.title = "VISUAL_CHECK";
+    })();
+  </script>
+</body>
+</html>
