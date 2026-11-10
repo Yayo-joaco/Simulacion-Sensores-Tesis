@@ -119,7 +119,15 @@ static bool mpuSampleValid(const sensors_event_t &a, const sensors_event_t &g,
   if (amOut) *amOut = am;
   if (gmOut) *gmOut = gm;
   // La comparacion con NaN devuelve false, asi que tambien descarta NaN.
-  return (am > ACCEL_MAG_MIN && am < ACCEL_MAG_MAX && gm < GYRO_MAG_MAX);
+  // Limites POR EJE: con el chip configurado a +-4 g ningun eje puede superar
+  // 39.24 m/s^2 ni a +-500 dps 8.73 rad/s. Una muestra corrupta puede colarse
+  // por la compuerta de magnitud (p.ej. 44 m/s^2 concentrados en un eje con el
+  // resto bajos), pero nunca por los limites fisicos de los registros.
+  return (am > ACCEL_MAG_MIN && am < ACCEL_MAG_MAX && gm < GYRO_MAG_MAX
+          && fabs(a.acceleration.x) < 39.5f && fabs(a.acceleration.y) < 39.5f
+          && fabs(a.acceleration.z) < 39.5f
+          && fabs(g.gyro.x) < 8.8f && fabs(g.gyro.y) < 8.8f
+          && fabs(g.gyro.z) < 8.8f);
 }
 
 static bool mpuBusAliveAt(uint8_t addr) {
