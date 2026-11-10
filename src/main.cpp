@@ -122,9 +122,32 @@ static bool mpuSampleValid(const sensors_event_t &a, const sensors_event_t &g,
   return (am > ACCEL_MAG_MIN && am < ACCEL_MAG_MAX && gm < GYRO_MAG_MAX);
 }
 
-static bool mpuBusAlive() {
-  Wire.beginTransmission(mpuAddr);
+static bool mpuBusAliveAt(uint8_t addr) {
+  Wire.beginTransmission(addr);
   return (Wire.endTransmission() == 0);
+}
+
+static bool mpuBusAlive() {
+  return mpuBusAliveAt(mpuAddr);
+}
+
+// Inicializa (o re-inicializa) el MPU6050 y aplica la configuracion del
+// contrato (±4 g, ±500 dps, filtro 21 Hz). Re-inicializar es la cura del
+// fallo tipico "ACK y WHO_AM_I correctos pero registros de datos en cero":
+// un chip que se quedo dormido o se reinicio solo. begin() incluye el
+// despertar del chip (reset + PWR_MGMT_1 = 0), por eso vale para ambos casos.
+static bool mpuConfigure() {
+  if (mpu.begin(0x68)) {
+    mpuAddr = 0x68;
+  } else if (mpu.begin(0x69)) {
+    mpuAddr = 0x69;
+  } else {
+    return false;
+  }
+  mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
+  mpu.setGyroRange(MPU6050_RANGE_500_DEG);
+  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+  return true;
 }
 
 #if ENABLE_ADXL345
@@ -156,6 +179,12 @@ void setup() {
 
   // --- I2C ---
   Wire.begin(21, 22);
+  // 50 kHz en lugar de los 100 kHz por defecto: con cables Dupont de
+  // protoboard y dos modulos compartiendo el bus (mas sus pull-ups en
+  // paralelo) los 100 kHz operan en el margen y las transacciones fallan de
+  // forma intermitente (requestFrom(): Error -1). El coste es nulo para dos
+  // sensores a 50 Hz y la robustez del bus se multiplica.
+  Wire.setClock(50000);
   // Acota el bloqueo por transaccion: por defecto son 50 ms, y getEvent() hace
   // varias transacciones, o sea hasta ~150 ms congelado si el bus queda a masa.
   Wire.setTimeOut(10);
@@ -176,17 +205,11 @@ void setup() {
   // --- MPU6050 ---
   Serial.println();
   Serial.println("[MPU6050] Inicializando...");
-  if (mpu.begin(0x68)) {
-    mpuFound = true; mpuAddr = 0x68;
-  } else if (mpu.begin(0x69)) {
-    mpuFound = true; mpuAddr = 0x69;
-  }
-  if (mpuFound) {
-    mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
-    mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-    mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+  if (mpuConfigure()) {
+    mpuFound = true;
     Serial.printf("[MPU6050] OK - Detectado en 0x%02X\n", mpuAddr);
   } else {
+    mpuFound = false;
     Serial.println("[MPU6050] NO detectado - se reintentara cada 2 s");
   }
 
@@ -346,6 +369,28 @@ void loop() {
         Serial.printf("[MPU6050] MUESTRAS INVALIDAS - revise cableado I2C "
                       "(|a|=%.3f m/s2 |w|=%.5f rad/s)\n", am, gm);
       }
+      // Auto-recuperacion: descartes seguidos con el chip respondiendo son el
+      // sintoma de un MPU dormido o reiniciado (registros de datos en cero).
+      // Cada 50 descartes (~1 s) se re-inicializa, lo que incluye despertarlo:
+      // si la causa era el estado interno del chip, el flujo DATA vuelve solo.
+      // Si el chip se fue del bus, se marca ausente y la re-deteccion periodica
+      // sigue probando. Coste: ~100 ms de bloqueo por reintento, solo en la
+      // ruta de fallo (nunca con el sensor sano).
+      if (badSamples % 50 == 0) {
+        // Sondar AMBAS direcciones revela el fallo tipico del cable AD0 suelto:
+        // el chip parpadea entre 0x68 y 0x69 y las transacciones al fijo fallan
+        // con NACK intermitente. Se imprime el ACK de cada una.
+        bool ack68 = mpuBusAliveAt(0x68), ack69 = mpuBusAliveAt(0x69);
+        Serial.printf("[MPU6050] REINTENTO DE INICIALIZACION (descartes: %u) "
+                      "bus: 0x68=%s 0x69=%s\n",
+                      (unsigned)badSamples, ack68 ? "ACK" : "NACK",
+                      ack69 ? "ACK" : "NACK");
+        if (mpuConfigure()) {
+          Serial.printf("[MPU6050] RECONECTADO en 0x%02X\n", mpuAddr);
+        } else {
+          mpuFound = false;
+        }
+      }
       return;
     }
     badSamples = 0;
@@ -383,12 +428,8 @@ void loop() {
 
   // --- Re-deteccion de sensores ausentes al arrancar ---
   if (!mpuFound) {
-    if (mpu.begin(0x68)) { mpuFound = true; mpuAddr = 0x68; }
-    else if (mpu.begin(0x69)) { mpuFound = true; mpuAddr = 0x69; }
-    if (mpuFound) {
-      mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
-      mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-      mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+    if (mpuConfigure()) {
+      mpuFound = true;
       Serial.printf("[MPU6050] RECONECTADO en 0x%02X\n", mpuAddr);
     }
   }
