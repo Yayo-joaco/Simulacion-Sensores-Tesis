@@ -10,3 +10,14 @@
 
 # Claude Code
 .claude
+
+# Dashboard: entorno Python, datos medidos y cachés (no son código de simulación)
+dashboard/.venv/
+dashboard/data/
+__pycache__/
+.pytest_cache/
+*.bak
+
+# Material de tesis (Fuentes/ y PDF): no se versiona en este repositorio
+Fuentes/
+*.pdf

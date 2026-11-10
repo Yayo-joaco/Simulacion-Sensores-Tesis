@@ -1,0 +1,7 @@
+# Dependencias del servidor de ingesta (dashboard/server).
+# Sin dependencias de red en tiempo de ejecución: todo funciona en local
+# (requisito del contrato §6 para despliegue en campo).
+fastapi>=0.162,<1.0
+uvicorn[standard]>=0.54,<1.0
+websockets>=17.3,<18.0
+pyserial>=3.5,<4.0

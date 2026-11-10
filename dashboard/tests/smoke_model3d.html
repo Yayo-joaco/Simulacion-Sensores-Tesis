@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<!--
+  smoke_model3d.html — comprobación automatizada de web/js/model3d.js.
+
+  Ejecuta el motor 3D real (sin mocks de render: canvas 2D de verdad) sobre
+  un canvas pequeño y comprueba invariantes de geometría, configuración
+  saneada y robustez del bucle de dibujo ante entradas extremas.
+
+  Ejecución (headless, sin servidor):
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+      --headless=new --disable-gpu --dump-dom \
+      "file://$(pwd)/tests/smoke_model3d.html"
+  El resultado se imprime en <pre id="results"> y el título pasa a ser
+  SMOKE_PASS o SMOKE_FAIL.
+-->
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>SMOKE_RUNNING</title>
+</head>
+<body>
+  <canvas id="c" width="800" height="500"></canvas>
+  <pre id="results">…</pre>
+  <script src="../web/js/model3d.js"></script>
+  <script>
+    (function () {
+      "use strict";
+      const out = [];
+      let failures = 0;
+
+      function check(name, cond, detail) {
+        if (cond) {
+          out.push("PASS  " + name);
+        } else {
+          failures++;
+          out.push("FAIL  " + name + (detail ? " — " + detail : ""));
+        }
+      }
+
+      // Stub de rAF: el bucle automático se detiene; se llama a _render a mano.
+      const raf = window.requestAnimationFrame;
+      window.requestAnimationFrame = function () { return 0; };
+
+      try {
+        const canvas = document.getElementById("c");
+        const M = window.TesisModel3D;
+        check("TesisModel3D exportado", !!M && typeof M.TowerModel === "function");
+
+        const model = new M.TowerModel(canvas);
+        check("constructor completa sin error", true);
+
+        // ── invariantes de geometría por configuración ──────────────────
+        function checkGeometry(tag) {
+          const nV = model.nVerts, nF = model.nFaces;
+          check(tag + ": vértices múltiplos de 3", model.verts.length % 3 === 0,
+            "len=" + model.verts.length);
+          check(tag + ": hay caras", nF > 0, "nF=" + nF);
+          let ok = true, maxIdx = -1;
+          for (const f of model.faces) {
+            if (f.iv.length < 3) { ok = false; break; }
+            for (const i of f.iv) {
+              if (i < 0 || i >= nV) { ok = false; }
+              if (i > maxIdx) maxIdx = i;
+            }
+          }
+          check(tag + ": índices de cara en rango", ok, "maxIdx=" + maxIdx + " nV=" + nV);
+          const a = model.sensorAnchor;
+          check(tag + ": ancla del sensor finita",
+            a.every(Number.isFinite));
+          // Todos los vértices dentro de un volumen razonable (sin NaN/Inf).
+          let finite = true;
+          for (let i = 0; i < model.verts.length; i++) {
+            if (!Number.isFinite(model.verts[i])) { finite = false; break; }
+          }
+          check(tag + ": todos los vértices finitos", finite);
+        }
+
+        checkGeometry("default");
+
+        // Configuraciones extremas + cada tipo de antena.
+        const extremes = [
+          { name: "torre mínima", cfg: { height: 6, baseWidth: 2, topWidth: 0.8, segments: 3, mastHeight: 0 } },
+          { name: "torre máxima", cfg: { height: 60, baseWidth: 16, topWidth: 12, segments: 16, mastHeight: 15 } },
+          { name: "antena panel", cfg: { antenna: "panel", panelW: 1, panelH: 6, panelD: 4 } },
+          { name: "antena disco", cfg: { antenna: "disco", dishD: 6 } },
+          { name: "antena panel+disco", cfg: { antenna: "panel+disco" } },
+          { name: "antena omni", cfg: { antenna: "omni", omniL: 6, omniR: 1 } },
+          { name: "sin antena", cfg: { antenna: "ninguna", mastHeight: 0 } },
+          { name: "sensor al 5%", cfg: { sensorPos: 0.05 } },
+          { name: "sensor al 98%", cfg: { sensorPos: 0.98 } },
+          { name: "ganancia extrema", cfg: { swayGain: 20 } },
+        ];
+        for (const e of extremes) {
+          const applied = model.setConfig(e.cfg);
+          check("setConfig[" + e.name + "] devuelve cfg saneada", !!applied && Number.isFinite(applied.height));
+          checkGeometry("geom[" + e.name + "]");
+        }
+
+        // ── sanitizeCfg: entradas basura ─────────────────────────────────
+        const junk = M.sanitizeCfg({ height: "enorme", segments: 99, antenna: "platillo", swayGain: -5, topWidth: 999 });
+        check("sanitize: altura basura → predeterminada", junk.height === M.DEFAULT_CFG.height, String(junk.height));
+        check("sanitize: segments recortado a 16", junk.segments === 16, String(junk.segments));
+        check("sanitize: antena desconocida → predeterminada", junk.antenna === M.DEFAULT_CFG.antenna, junk.antenna);
+        check("sanitize: swayGain negativo → mínimo", junk.swayGain === 0.05, String(junk.swayGain));
+        check("sanitize: topWidth ≤ baseWidth", junk.topWidth <= junk.baseWidth, junk.topWidth + ">" + junk.baseWidth);
+        check("sanitize: null → predeterminados", M.sanitizeCfg(null).height === M.DEFAULT_CFG.height);
+
+        // ── vibración: amplitud recortada, dirección, NaN ────────────────
+        model.setConfig(Object.assign({}, M.DEFAULT_CFG, { swayGain: 1 }));
+        model.setHasData(true);
+        model.setVibration(2.0, 3.0, 1.0, 0.0, 9.8);
+        const maxSway = M.DEFAULT_CFG.height * 0.12;
+        check("setVibration: objetivo de amplitud = rms × ganancia",
+          Math.abs(model.vibAmpTarget - 2.0) < 1e-6, String(model.vibAmpTarget));
+        model.setVibration(1e6, 1e6, 0, 0, 9.8);
+        check("setVibration: amplitud recortada al techo (12% de H)",
+          model.vibAmpTarget <= maxSway + 1e-9, String(model.vibAmpTarget));
+        model.setVibration(NaN, NaN, NaN, NaN, NaN);
+        check("setVibration: NaN no rompe ni cambia objetivos",
+          Math.abs(model.vibAmpTarget - maxSway) < 1e-9);
+        // Dirección: sacudida en X del módulo → balanceo hacia +X del mundo.
+        model._grav = [0, 0, 9.80665]; model._dirRaw = [0, 0];
+        for (let i = 0; i < 40; i++) model.setVibration(1, 1, 2.0, 0.0, 9.80665);
+        check("setVibration: dirección converge al eje de la sacudida",
+          Math.abs(model.swayDir[0]) > 0.9 && Math.abs(model.swayDir[1]) < 0.2,
+          "dir=" + model.swayDir.map((v) => v.toFixed(3)).join(","));
+
+        // ── bucle de dibujo: frames reales sobre canvas 2D ───────────────
+        model.setVibration(1.5, 2.5, 1.0, 1.0, 9.8);
+        model.setOrientation(5, -3, 30);
+        let renderOk = true, err = null;
+        for (let i = 0; i < 5; i++) {
+          try { model._render(performance.now() + i * 16); }
+          catch (e) { renderOk = false; err = e; break; }
+        }
+        check("_render: 5 frames sin excepción", renderOk, err && String(err));
+
+        // ── halo: debe seguir al marcador del sensor bajo rotación ──────
+        // (regresión del defecto: el ancla se proyectaba sin rotar y el halo
+        // se despegaba del cubo — con yaw=180° quedaba en el lado opuesto).
+        // Objetivo y estado se fijan AL MISMO valor para que el suavizado
+        // interno no arrastre ángulos de pruebas anteriores, y se renderiza
+        // con el MISMO timestamp del frame anterior: dt = 0 no avanza la
+        // fase del balanceo y la comprobación es exacta.
+        model.setHasData(true);
+        model.vibAmp = 0; model.vibAmpTarget = 0; // sin balanceo: solo rotación
+        model._swayPhase = 0;
+        model.setVibration(0, 1.0, 0, 0, 9.8); // halo activo
+        model.setOrientation(0, 0, 180);
+        model.roll = 0; model.pitch = 0; model.yaw = 180;
+        model._render(model._lastFrameMs);
+        // Con yaw = 180° la rotación del contrato (INVERT_YAW) es diag(-1,-1,1):
+        // el ancla (a0, a1, a2) debe aparecer en (-a0, -a1, a2).
+        const ancla = model.sensorAnchor, hw = model._haloWorld;
+        check("halo sigue al marcador con yaw=180",
+          Math.abs(hw[0] + ancla[0]) < 1e-3 &&
+          Math.abs(hw[1] + ancla[1]) < 1e-3 &&
+          Math.abs(hw[2] - ancla[2]) < 1e-3,
+          "halo=" + hw.map((v) => v.toFixed(3)).join(",") +
+          " ancla=" + ancla.map((v) => v.toFixed(3)).join(","));
+        // Y con balanceo activo: el ancla transformada debe recibir también
+        // la deflexión (y/H)²·swayDisp de los vértices (sobre el eje del
+        // balanceo, en el plano horizontal del MUNDO).
+        model.vibAmp = 1; model.vibAmpTarget = 1; // objetivo = valor: sin suavizado
+        model._swayPhase = 0.25; // seno(π/2) = 1
+        model.swayDir = [1, 0];
+        model._render(model._lastFrameMs);
+        const t2 = ancla[1] / model.cfg.height;
+        const esperadoX = -ancla[0] + 1 * t2 * t2;
+        const esperadoY = -ancla[1];
+        check("halo recibe la deflexión del balanceo",
+          Math.abs(model._haloWorld[0] - esperadoX) < 1e-3 &&
+          Math.abs(model._haloWorld[1] - esperadoY) < 1e-3,
+          model._haloWorld.map((v) => v.toFixed(3)).join(",") +
+          " ≠ " + [esperadoX, esperadoY].map((v) => v.toFixed(3)).join(","));
+        model.vibAmp = 0;
+
+        // ── backface culling: abanicos a dos caras, sólidos a una ───────
+        check("culling: hay caras marcadas a dos caras (discos)",
+          model.faces.some((f) => f.twoSided === true));
+        check("culling: hay caras de una sola cara (vigas/cajas)",
+          model.faces.some((f) => !f.twoSided));
+
+        // Sin datos + vibración previa: la amplitud debe tender a cero.
+        model.setHasData(false);
+        model.vibAmp = 1;
+        for (let i = 0; i < 30; i++) model._render(performance.now() + 100 + i * 16);
+        check("sin datos: la amplitud de balanceo decae", model.vibAmp < 0.2, String(model.vibAmp));
+
+        // Pausa: el modelo no debe aceptar objetivos nuevos.
+        model.setPaused(true);
+        const rollBefore = model.targetRoll;
+        model.setOrientation(45, 45, 45);
+        check("pausa: setOrientation se ignora", model.targetRoll === rollBefore,
+          String(model.targetRoll) + " ≠ " + rollBefore);
+
+        // Config tras configurar: buffers reasignados y render sigue vivo.
+        model.setPaused(false);
+        model.setConfig({ height: 33, antenna: "omni" });
+        renderOk = true;
+        try { model._render(performance.now() + 1000); } catch (e) { renderOk = false; err = e; }
+        check("_render tras setConfig sin excepción", renderOk, err && String(err));
+        check("setConfig: la altura aplicada es la pedida", model.cfg.height === 33, String(model.cfg.height));
+      } catch (e) {
+        failures++;
+        out.push("FAIL  excepción global — " + (e && e.stack ? e.stack : e));
+      }
+
+      window.requestAnimationFrame = raf;
+      const pre = document.getElementById("results");
+      pre.textContent = out.join("\n") + "\n---\n" +
+        (failures === 0 ? "TOTAL: OK" : "TOTAL: " + failures + " fallo(s)");
+      document.title = failures === 0 ? "SMOKE_PASS" : "SMOKE_FAIL";
+    })();
+  </script>
+</body>
+</html>

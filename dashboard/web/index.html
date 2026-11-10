@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Sin CDN ni fuentes externas: el sistema debe funcionar sin Internet en campo. -->
+  <title>Monitoreo estructural — Torre estación base</title>
+  <link rel="stylesheet" href="css/dashboard.css">
+</head>
+<body>
+  <!-- ═══════════════════════ encabezado ═══════════════════════ -->
+  <header class="topbar">
+    <div class="brand">
+      <h1>Plataforma de monitoreo estructural</h1>
+      <p class="subtitle">Monitoreo estructural - Torre estación base</p>
+    </div>
+    <div class="topbar-status">
+      <div class="conn" role="status" aria-live="polite">
+        <span class="conn-dot conn-red" id="conn-dot" aria-hidden="true"></span>
+        <span id="conn-text" class="conn-red">SIN CONEXIÓN</span>
+      </div>
+      <div class="meta">
+        <span class="meta-item">Puerto serie: <strong id="serial-port">—</strong></span>
+        <span class="meta-item"><strong id="utc-clock">--:--:--</strong> UTC</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- ═══════════ fila única de controles (gobierna todas las gráficas) ═══════════ -->
+    <div class="toolbar" role="region" aria-label="Controles de visualización">
+      <label class="field" for="window-select">
+        <span class="field-label">Ventana temporal</span>
+        <select id="window-select" aria-label="Ventana temporal de las gráficas">
+          <option value="30000">30 s</option>
+          <option value="45000">45 s</option>
+          <option value="60000" selected>60 s</option>
+        </select>
+      </label>
+      <p class="toolbar-note">Los datos en vivo se reciben por WebSocket y el histórico se recupera del servidor al conectar.</p>
+    </div>
+
+    <!-- ═══════════════════ modelo 3D de la torre ═══════════════════ -->
+    <!-- Panel protagonista (primera fila destacada): la estructura real que
+         la tesis monitorea, inclinándose en tiempo real con la orientación
+         que el servidor calcula en derived.roll/pitch/yaw (CONTRATO §5).
+         La orientación NUNCA se recalcula en el cliente. -->
+    <section class="panel panel-model3d" id="panel-model3d" aria-labelledby="panel-model3d-title">
+      <header class="panel-head">
+        <h2 id="panel-model3d-title">Modelo 3D — Torre de monitoreo</h2>
+        <span class="badge badge-off" id="badge-model3d">sin datos</span>
+      </header>
+
+      <!-- Lectura en vivo encima del canvas: orientación (MPU6050) e
+           vibración (ADXL345). Los umbrales son SOLO visuales (igual que los
+           de las gráficas) y se persisten en localStorage para que sobrevivan
+           a un refresco del puesto. -->
+      <div class="model3d-hud">
+        <dl class="orientation-values">
+          <div><dt>Roll</dt><dd id="model3d-roll">—</dd></div>
+          <div><dt>Pitch</dt><dd id="model3d-pitch">—</dd></div>
+          <div><dt>Yaw</dt><dd id="model3d-yaw">—</dd></div>
+          <div><dt>Inclinación total</dt><dd id="model3d-incl">—</dd></div>
+          <div><dt>Vibración RMS</dt><dd id="model3d-vib-rms">—</dd></div>
+          <div><dt>Vibración pico</dt><dd id="model3d-vib-peak">—</dd></div>
+        </dl>
+        <div class="model3d-incl-state">
+          <span class="badge incl-ok" id="model3d-incl-badge" role="status">● NORMAL</span>
+          <label class="field" for="model3d-threshold">
+            <span class="field-label">Umbral visual (°)</span>
+            <input type="number" id="model3d-threshold" min="0.5" step="0.5" value="5"
+                   aria-describedby="model3d-threshold-help">
+          </label>
+          <p class="help" id="model3d-threshold-help">Inclinación total = norma del vector roll/pitch. Solo visual: colorea el semáforo. No dispara alertas.</p>
+        </div>
+        <!-- Nivel de vibración frente al umbral visual: misma escala y mismo
+             umbral que la gráfica de vibración del panel ADXL345. -->
+        <div class="model3d-vib-state">
+          <div class="vib-bar" role="img" aria-label="Nivel de vibración RMS frente al umbral visual">
+            <div class="vib-bar-fill" id="model3d-vib-bar"></div>
+          </div>
+          <p class="help">Balanceo del modelo ∝ vib_rms medida (ganancia visual ×<span id="model3d-gain-echo">3.0</span>). Umbral: <span id="model3d-vib-thr">0.50</span> m/s² · la frecuencia del balanceo es ilustrativa (1.6 Hz fija).</p>
+        </div>
+      </div>
+
+      <div class="model3d-stage">
+        <canvas id="model3d-canvas" role="img"
+                aria-label="Modelo 3D de la torre de celosía inclinándose con la orientación medida por el MPU6050"></canvas>
+      </div>
+
+      <div class="model3d-controls">
+        <button type="button" class="btn" id="model3d-reset">Restablecer vista</button>
+        <button type="button" class="btn" id="model3d-pause">Pausar</button>
+        <label class="legend-item"><input type="checkbox" id="model3d-axes" checked> Ejes</label>
+        <label class="legend-item"><input type="checkbox" id="model3d-shadow" checked> Sombra</label>
+        <p class="help">Arrastre para orbitar la cámara · rueda para zoom · doble clic para restablecer la vista. La orientación y el balanceo del modelo los fija el sensor; la cámara es del operador.</p>
+      </div>
+
+      <!-- Configuración de la geometría: cada prueba de campo puede
+           reproducir la estructura real (altura, antena, posición del sensor)
+           sin tocar código. Se persiste en localStorage. -->
+      <details class="model3d-config" id="model3d-config">
+        <summary>Configuración de la torre y la antena</summary>
+        <form class="config-grid" id="model3d-cfg-form" autocomplete="off">
+          <label class="field" for="cfg-height">
+            <span class="field-label">Altura de la celosía (m)</span>
+            <input type="number" id="cfg-height" min="6" max="60" step="0.5" value="20">
+          </label>
+          <label class="field" for="cfg-base">
+            <span class="field-label">Lado de la base (m)</span>
+            <input type="number" id="cfg-base" min="2" max="16" step="0.1" value="6">
+          </label>
+          <label class="field" for="cfg-top">
+            <span class="field-label">Lado de la cima (m)</span>
+            <input type="number" id="cfg-top" min="0.8" max="12" step="0.1" value="2.4">
+          </label>
+          <label class="field" for="cfg-segments">
+            <span class="field-label">Tramos</span>
+            <input type="number" id="cfg-segments" min="3" max="16" step="1" value="10">
+          </label>
+          <label class="field" for="cfg-mast">
+            <span class="field-label">Altura del mástil (m)</span>
+            <input type="number" id="cfg-mast" min="0" max="15" step="0.1" value="3.6">
+          </label>
+          <label class="field" for="cfg-antenna">
+            <span class="field-label">Tipo de antena</span>
+            <select id="cfg-antenna">
+              <option value="panel+disco" selected>Panel + disco</option>
+              <option value="panel">Panel</option>
+              <option value="disco">Disco de microondas</option>
+              <option value="omni">Omnidireccional</option>
+              <option value="ninguna">Sin antena</option>
+            </select>
+          </label>
+          <label class="field" for="cfg-panel-w" data-antenna="panel">
+            <span class="field-label">Espesor del panel (m)</span>
+            <input type="number" id="cfg-panel-w" min="0.08" max="1" step="0.01" value="0.18">
+          </label>
+          <label class="field" for="cfg-panel-h" data-antenna="panel">
+            <span class="field-label">Alto del panel (m)</span>
+            <input type="number" id="cfg-panel-h" min="0.3" max="6" step="0.1" value="1.5">
+          </label>
+          <label class="field" for="cfg-panel-d" data-antenna="panel">
+            <span class="field-label">Ancho del panel (m)</span>
+            <input type="number" id="cfg-panel-d" min="0.2" max="4" step="0.1" value="0.85">
+          </label>
+          <label class="field" for="cfg-dish-d" data-antenna="disco">
+            <span class="field-label">Diámetro del disco (m)</span>
+            <input type="number" id="cfg-dish-d" min="0.4" max="6" step="0.1" value="1.9">
+          </label>
+          <label class="field" for="cfg-omni-l" data-antenna="omni">
+            <span class="field-label">Longitud del omni (m)</span>
+            <input type="number" id="cfg-omni-l" min="0.5" max="6" step="0.1" value="1.6">
+          </label>
+          <label class="field" for="cfg-omni-r" data-antenna="omni">
+            <span class="field-label">Radio de discos del omni (m)</span>
+            <input type="number" id="cfg-omni-r" min="0.08" max="1" step="0.01" value="0.22">
+          </label>
+          <label class="field" for="cfg-sensor-pos">
+            <span class="field-label">Posición del sensor (% altura)</span>
+            <input type="number" id="cfg-sensor-pos" min="5" max="98" step="1" value="50">
+          </label>
+          <label class="field" for="cfg-sway-gain">
+            <span class="field-label">Ganancia visual del balanceo (m por m/s²)</span>
+            <input type="number" id="cfg-sway-gain" min="0.05" max="20" step="0.05" value="3">
+          </label>
+        </form>
+        <div class="model3d-controls">
+          <button type="button" class="btn" id="model3d-cfg-apply">Aplicar</button>
+          <button type="button" class="btn" id="model3d-cfg-reset">Restaurar predeterminados</button>
+          <p class="help">Los valores se guardan en este navegador. La ganancia del balanceo amplifica visualmente la vibración medida (exageración habitual en dinámica estructural); el techo del balanceo es el 12 % de la altura. No cambian ningún dato medido.</p>
+        </div>
+      </details>
+    </section>
+
+    <!-- ═══════════════════════ fila de KPI ═══════════════════════ -->
+    <section class="kpi-row" aria-label="Indicadores principales">
+      <article class="kpi-card">
+        <h2 class="kpi-label">Flujo de datos</h2>
+        <p class="kpi-value"><span id="kpi-hz">—</span><span class="kpi-unit">Hz</span></p>
+        <p class="kpi-trend" id="kpi-hz-trend">—</p>
+        <canvas class="kpi-spark" id="spark-hz" aria-hidden="true"></canvas>
+        <p class="kpi-sub" id="kpi-hz-sub">nominal 50 Hz</p>
+      </article>
+
+      <article class="kpi-card">
+        <h2 class="kpi-label">Muestras totales</h2>
+        <p class="kpi-value"><span id="kpi-samples">—</span></p>
+        <p class="kpi-trend" id="kpi-samples-trend">—</p>
+        <p class="kpi-sub">acumuladas según el servidor</p>
+      </article>
+
+      <article class="kpi-card">
+        <h2 class="kpi-label">Temperatura MPU6050</h2>
+        <p class="kpi-value"><span id="kpi-temp">—</span><span class="kpi-unit">°C</span></p>
+        <p class="kpi-trend" id="kpi-temp-trend">—</p>
+        <canvas class="kpi-spark" id="spark-temp" aria-hidden="true"></canvas>
+        <p class="kpi-sub">sensor interno del encapsulado</p>
+      </article>
+
+      <article class="kpi-card" id="kpi-vib-card">
+        <h2 class="kpi-label">Vibración RMS</h2>
+        <p class="kpi-value"><span id="kpi-vib">—</span><span class="kpi-unit">m/s²</span></p>
+        <p class="kpi-trend" id="kpi-vib-trend">—</p>
+        <canvas class="kpi-spark" id="spark-vib" aria-hidden="true"></canvas>
+        <p class="kpi-sub">ventana de 1 s · umbral visual configurable</p>
+      </article>
+
+      <article class="kpi-card">
+        <h2 class="kpi-label">Pitch / Roll</h2>
+        <p class="kpi-value kpi-value-small"><span id="kpi-orient">—</span></p>
+        <p class="kpi-trend" id="kpi-orient-trend">—</p>
+        <p class="kpi-sub">inclinación actual de la torre</p>
+      </article>
+
+      <article class="kpi-card">
+        <h2 class="kpi-label">Latencia de ingesta</h2>
+        <p class="kpi-value"><span id="kpi-latency">—</span><span class="kpi-unit">ms</span></p>
+        <p class="kpi-trend" id="kpi-latency-trend">—</p>
+        <canvas class="kpi-spark" id="spark-latency" aria-hidden="true"></canvas>
+        <p class="kpi-sub">reloj del servidor vs. del navegador</p>
+      </article>
+    </section>
+
+    <!-- ═══════════════════════ panel MPU6050 ═══════════════════════ -->
+    <section class="panel" id="panel-mpu" aria-labelledby="panel-mpu-title">
+      <header class="panel-head">
+        <h2 id="panel-mpu-title">Panel MPU6050</h2>
+        <span class="badge" id="badge-mpu">—</span>
+      </header>
+
+      <div class="panel-grid">
+        <figure class="chart-card">
+          <figcaption class="chart-title">
+            <h3>Aceleración X/Y/Z</h3>
+            <span class="unit">m/s²</span>
+          </figcaption>
+          <div class="chart-wrap">
+            <canvas id="chart-mpu-accel"></canvas>
+          </div>
+          <div class="chart-legend" id="legend-mpu-accel"></div>
+          <div class="chart-tools">
+            <button type="button" class="btn" data-table="mpu-accel" aria-expanded="false" aria-controls="table-mpu-accel">Ver tabla</button>
+          </div>
+          <div class="chart-table" id="table-mpu-accel" hidden>
+            <table>
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </figure>
+
+        <figure class="chart-card">
+          <figcaption class="chart-title">
+            <h3>Giro X/Y/Z</h3>
+            <span class="unit">°/s <span class="unit-note">(BD en rad/s, convertido al presentar)</span></span>
+          </figcaption>
+          <div class="chart-wrap">
+            <canvas id="chart-mpu-gyro"></canvas>
+          </div>
+          <div class="chart-legend" id="legend-mpu-gyro"></div>
+          <div class="chart-tools">
+            <button type="button" class="btn" data-table="mpu-gyro" aria-expanded="false" aria-controls="table-mpu-gyro">Ver tabla</button>
+          </div>
+          <div class="chart-table" id="table-mpu-gyro" hidden>
+            <table>
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </figure>
+      </div>
+
+      <div class="panel-grid">
+        <figure class="chart-card">
+          <figcaption class="chart-title">
+            <h3>Orientación</h3>
+            <span class="unit">grados</span>
+          </figcaption>
+          <div class="orientation-body">
+            <div class="horizon-wrap">
+              <canvas id="horizon" role="img" aria-label="Horizonte artificial con la inclinación actual"></canvas>
+            </div>
+            <dl class="orientation-values">
+              <div><dt>Roll</dt><dd id="val-roll">—</dd></div>
+              <div><dt>Pitch</dt><dd id="val-pitch">—</dd></div>
+              <div><dt>Yaw</dt><dd id="val-yaw">—</dd></div>
+              <div><dt>|accel|</dt><dd id="val-accel-mag">—</dd></div>
+              <div><dt>|gyro|</dt><dd id="val-gyro-mag">—</dd></div>
+            </dl>
+          </div>
+        </figure>
+
+        <figure class="chart-card">
+          <figcaption class="chart-title">
+            <h3>Temperatura</h3>
+            <span class="unit">°C</span>
+          </figcaption>
+          <div class="temp-body">
+            <p class="temp-big"><span id="val-temp">—</span></p>
+            <p class="kpi-sub">Temperatura reportada por el MPU6050 en cada muestra.</p>
+          </div>
+        </figure>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════ panel ADXL345 ═══════════════════════ -->
+    <section class="panel" id="panel-adxl" aria-labelledby="panel-adxl-title">
+      <header class="panel-head">
+        <h2 id="panel-adxl-title">Panel ADXL345</h2>
+        <span class="badge" id="badge-adxl">—</span>
+      </header>
+
+      <div class="panel-grid">
+        <figure class="chart-card">
+          <figcaption class="chart-title">
+            <h3>Aceleración X/Y/Z</h3>
+            <span class="unit">m/s²</span>
+          </figcaption>
+          <div class="chart-wrap">
+            <canvas id="chart-adxl-accel"></canvas>
+          </div>
+          <div class="chart-legend" id="legend-adxl-accel"></div>
+          <div class="chart-tools">
+            <button type="button" class="btn" data-table="adxl-accel" aria-expanded="false" aria-controls="table-adxl-accel">Ver tabla</button>
+          </div>
+          <div class="chart-table" id="table-adxl-accel" hidden>
+            <table>
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </figure>
+
+        <!-- Gráfica clave de la tesis: vibración con umbral visual.
+             El campo de umbral es configuración de la referencia dibujada,
+             no un filtro de datos: por eso vive junto a la serie que gobierna. -->
+        <figure class="chart-card chart-card-key">
+          <figcaption class="chart-title">
+            <h3>Vibración</h3>
+            <span class="unit">m/s² · señal clave</span>
+          </figcaption>
+          <div class="chart-tools chart-tools-threshold">
+            <label class="field" for="vib-threshold">
+              <span class="field-label">Umbral visual (m/s²)</span>
+              <input type="number" id="vib-threshold" min="0" step="0.05" value="0.5"
+                     aria-describedby="vib-threshold-help">
+            </label>
+            <span class="badge badge-alert" id="vib-state" hidden></span>
+            <p class="help" id="vib-threshold-help">Solo visual: marca la línea en la gráfica y resalta la tarjeta de vibración. No dispara alertas.</p>
+          </div>
+          <div class="chart-wrap chart-wrap-tall">
+            <canvas id="chart-vib"></canvas>
+          </div>
+          <div class="chart-legend" id="legend-vib"></div>
+          <div class="chart-tools">
+            <button type="button" class="btn" data-table="vib" aria-expanded="false" aria-controls="table-vib">Ver tabla</button>
+          </div>
+          <div class="chart-table" id="table-vib" hidden>
+            <table>
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </figure>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════ panel de eventos ═══════════════════════ -->
+    <section class="panel" id="panel-events" aria-labelledby="panel-events-title">
+      <header class="panel-head">
+        <h2 id="panel-events-title">Eventos</h2>
+        <button type="button" class="btn" id="events-clear">Limpiar</button>
+      </header>
+      <!-- role="log": lectura progresiva de la consola para lectores de pantalla -->
+      <div class="events-console" id="events-console" role="log" aria-label="Consola de eventos del sistema"></div>
+      <p class="kpi-sub">Máximo 300 líneas en memoria. Niveles: <span class="log-level-demo log-info-demo">INFO</span> <span class="log-level-demo log-warn-demo">WARN</span> <span class="log-level-demo log-error-demo">ERROR</span></p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>Tesis: <em>Diseño e implementación de un sistema IoT-WSN y CCTV para el monitoreo de subsistemas críticos en un tramo de red troncal rural</em> · Protocolo según <code>CONTRATO_DE_DATOS.md</code></p>
+  </footer>
+
+  <script src="js/charts.js"></script>
+  <script src="js/model3d.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
